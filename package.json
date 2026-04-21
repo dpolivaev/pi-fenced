@@ -1,0 +1,26 @@
+{
+  "name": "pi-fenced",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "clean": "echo 'nothing to clean'",
+    "build": "echo 'nothing to build'",
+    "check": "echo 'nothing to check'",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "^0.67.68"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.67.68",
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}
