@@ -242,7 +242,7 @@ fence config show --settings <proposalPath>
 4. Add external `pi-fenced-apply` command with backup/rollback.
 5. Build PI extension launcher-guard + request/proposal flow.
 6. Add end-to-end tests for apply/reject/rollback/restart paths.
-7. Add docs and operational runbook.
+7. Add user-facing operational documentation in README.
 
 ## Open questions
 
