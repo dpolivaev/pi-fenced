@@ -1,47 +1,134 @@
 # pi-fenced
 
-Fence-first PI runtime with externalized configuration apply.
+Launcher-managed PI runtime with Fence-first enforcement and
+out-of-process policy apply.
 
-## Current status
+## Implemented scope (v1)
 
-This repository currently includes:
+Current implementation is **global scope only**.
 
-- architecture/design document: `design.md`
-- initial `/configure-fence` extension scaffold:
-  - `index.ts`
-  - `configure-fence.ts`
-  - `tests/configure-fence.test.ts`
-  - `package.json`
-  - `tsconfig.json`
-- implementation plan with subtasks:
-  `tasks/in-progress/fence-first-runtime-and-external-apply-workflow.md`
+Included components:
 
-Launcher (`pi-fenced`) and external applier (`pi-fenced-apply`) are
-planned but not implemented yet.
+- launcher: `launcher/pi-fenced.ts`
+- external applier: `apply/pi-fenced-apply.ts`
+- PI extension commands: `/configure-fence`, `/show-fence-config`
 
-## Core model
+The launcher runs PI, detects pending config requests, runs the external
+apply flow, and restarts PI when needed.
 
-- PI always runs inside Fence started by a launcher pi-fenced.
-- Active config precedence is strict and non-merged:
-  `session > workspace > global`.
-- Active scope config files must not use top-level `extends`.
-- `/configure-fence` creates proposal/request artifacts under
-  `/tmp/pi-fenced` and hands off to the launcher starting an external apply flow.
-- Extension runtime guard requires both `FENCE_SANDBOX=1` and
-  `PI_FENCED_LAUNCHER=1` (set by `pi-fenced.sh`) for active mode;
-  otherwise it self-disables functional behavior and reports inactive
-  status.
+## Runtime model
 
-## Key paths
+### Managed runtime guard
 
-- Proposal files: `/tmp/pi-fenced/proposals/<id>.json`
-- Request files: `/tmp/pi-fenced/control/request-<id>.json`
-- Session config: `/tmp/pi-fenced/sessions/<session-id>/fence.json`
-- Workspace config: `<workspace>/fence.json`
-- Global config: `~/.config/fence/fence.json`
+The extension requires launcher-managed runtime:
 
-## Next session entry points
+- `PI_FENCED_LAUNCHER=1` -> commands are available
+- otherwise -> warn + graceful shutdown
 
-1. Review `design.md` for architecture and contracts.
-2. Use task file in `tasks/in-progress/` as execution source of truth.
-3. Start with launcher + applier subtasks, then integrate restart loop.
+### Global config ownership
+
+Global target path is:
+
+- `<agentDir>/fence/global.json`
+
+`agentDir` resolution:
+
+- `PI_CODING_AGENT_DIR` when set (supports `~` and `~/...`)
+- otherwise `~/.pi/agent`
+
+Bootstrap chain on launcher startup:
+
+1. ensure `~/.config/fence/fence.json` exists,
+   create `{"extends":"code"}` when missing
+2. ensure `<agentDir>/fence/global.json` exists,
+   create `{"extends":"@base"}` when missing
+
+### Launcher modes
+
+Default (fenced, self-protected):
+
+```bash
+node launcher/pi-fenced.ts -- --model <provider/model>
+```
+
+Fenced with monitor:
+
+```bash
+node launcher/pi-fenced.ts --fence-monitor -- --model <provider/model>
+```
+
+Unfenced diagnostics mode (**requires explicit unlock**):
+
+```bash
+node launcher/pi-fenced.ts --without-fence --allow-self-modify -- --model <provider/model>
+```
+
+Unlock mode (fenced, maintenance/development):
+
+```bash
+node launcher/pi-fenced.ts --allow-self-modify -- --model <provider/model>
+```
+
+Notes:
+
+- launcher always forwards remaining args to `pi`
+- `--fence-monitor` is ignored in `--without-fence` mode with warning
+- `--without-fence` is refused unless `--allow-self-modify` is set
+- `--allow-self-modify` emits a loud warning and temporarily disables
+  default self-protection writes lock
+
+### Default self-protection lock (when `--allow-self-modify` is not used)
+
+In fenced mode, launcher generates a locked runtime settings overlay that
+adds `filesystem.denyWrite` protections for:
+
+- `launcher/**`
+- `apply/**`
+- `<agentDir>/fence/global.json` and its parent directory
+- `~/.config/fence/fence.json` and its parent directory
+
+This prevents direct in-session tampering of control-plane code and
+active Fence config files. Normal config mutation path remains:
+`/configure-fence` -> external apply.
+
+## Request/apply artifacts
+
+All control artifacts live under `/tmp/pi-fenced`:
+
+- requests: `/tmp/pi-fenced/control/request-<id>.json`
+- proposals: `/tmp/pi-fenced/proposals/<id>.json`
+- backups: `/tmp/pi-fenced/backups/<id>/...`
+
+Request contract uses replace-only apply:
+
+- `scope: "global"`
+- `mutationType: "replace"`
+- `baseSha256` stale-write protection
+
+## Slash commands
+
+### `/configure-fence`
+
+- always targets `<agentDir>/fence/global.json`
+- creates proposal + request under `/tmp/pi-fenced`
+- asks for confirmation and optional shutdown handoff
+
+### `/show-fence-config`
+
+Runs:
+
+```bash
+fence config show --settings <agentDir>/fence/global.json
+```
+
+Displays Fence output **verbatim** (stderr chain + stdout effective
+JSON), without sending that output through LLM context.
+
+## Recovery and operations
+
+See `docs/runbook.md` for:
+
+- apply/reject flow
+- conflict cleanup behavior
+- stale hash / invalid proposal / rollback recovery
+- `/show-fence-config` operational usage

@@ -53,7 +53,7 @@ test("buildScopeAnalysisPrompt includes no-merge precedence", () => {
 	assert.match(prompt, /exactly one scope file is active/);
 });
 
-test("buildMutationProposalPrompt includes no-extends instruction", () => {
+test("buildMutationProposalPrompt documents extends support", () => {
 	const prompt = buildMutationProposalPrompt({
 		requestText: "deny git push",
 		resolvedScope: "workspace",
@@ -67,7 +67,7 @@ test("buildMutationProposalPrompt includes no-extends instruction", () => {
 	assert.match(prompt, /Call the provided tool exactly once/);
 	assert.match(prompt, /Resolved scope: workspace/);
 	assert.match(prompt, /Current target file content:/);
-	assert.match(prompt, /Do not include top-level extends/);
+	assert.match(prompt, /Top-level extends values are allowed when needed/);
 });
 
 test("scope tool schema validates correct arguments", () => {
@@ -268,9 +268,7 @@ test("ensureValidFenceConfigContent accepts object json and appends newline", ()
 	assert.equal(normalized.endsWith("\n"), true);
 });
 
-test("ensureValidFenceConfigContent rejects top-level extends", () => {
-	assert.throws(
-		() => ensureValidFenceConfigContent('{"extends":"@base"}'),
-		/top-level \"extends\" is not allowed/,
-	);
+test("ensureValidFenceConfigContent accepts top-level extends", () => {
+	const normalized = ensureValidFenceConfigContent('{"extends":"@base"}');
+	assert.equal(normalized, '{"extends":"@base"}\n');
 });

@@ -281,7 +281,7 @@ export function buildMutationProposalPrompt(input: MutationProposalPromptInput):
 		"Mutation semantics:",
 		"- Preserve unrelated settings.",
 		"- Keep JSON valid (no comments, no trailing commas).",
-		"- Do not include top-level extends (no merge policy).",
+		"- Top-level extends values are allowed when needed.",
 		"- Use write for create/full rewrite, edit for minimal exact patch.",
 	].join("\n");
 }
@@ -388,12 +388,6 @@ export function ensureValidFenceConfigContent(content: string): string {
 
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new Error("Fence config must be a JSON object.");
-	}
-
-	if (Object.prototype.hasOwnProperty.call(parsed, "extends")) {
-		throw new Error(
-			"Top-level \"extends\" is not allowed in active config scope (no-merge policy).",
-		);
 	}
 
 	return content.endsWith("\n") ? content : `${content}\n`;

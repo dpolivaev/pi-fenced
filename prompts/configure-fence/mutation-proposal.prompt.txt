@@ -1,0 +1,50 @@
+Produce the exact Fence configuration mutation for the selected scope.
+
+Call tool %%TOOL_NAME%% exactly once with JSON arguments only.
+Do not output prose.
+
+Required output fields:
+- mutationType: "write" or "edit"
+- reasoning: non-empty string
+- changeMode: non-empty string
+- effectSummary: non-empty string
+- conflictSummary: optional string (use "none" if no conflict)
+- writeContent: required when mutationType is "write"
+- edits: required when mutationType is "edit"
+
+Mutation semantics:
+- Write mode:
+  - writeContent must be the full final file content.
+  - use for create/full rewrite or when edit safety is uncertain.
+- Edit mode:
+  - each edit must contain oldText and newText.
+  - each oldText must uniquely match exactly one region of existing
+    content.
+  - edits must be non-overlapping.
+  - use only for safe minimal patching.
+
+Fence config requirements:
+- Final content must be valid JSON object.
+- No comments, no trailing commas.
+- Fence extends is allowed and may use any Fence-supported value.
+- Preserve unrelated settings unless user explicitly requests removal.
+
+Selection rules:
+- If target file does not exist, use mutationType="write".
+- If an edit cannot be guaranteed unique/non-overlapping, use
+  mutationType="write".
+
+Input:
+Resolved scope: %%RESOLVED_SCOPE%%
+Target file path: %%TARGET_PATH%%
+
+User request:
+%%REQUEST_TEXT%%
+
+Scope analysis:
+- reasoning: %%SCOPE_REASONING%%
+- effectSummary: %%SCOPE_EFFECT_SUMMARY%%
+- conflictSummary: %%SCOPE_CONFLICT_SUMMARY%%
+
+Existing target context:
+%%EXISTING_TARGET_CONTEXT%%

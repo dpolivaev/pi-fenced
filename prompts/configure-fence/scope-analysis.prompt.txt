@@ -1,0 +1,49 @@
+Determine where the requested Fence configuration change should apply.
+
+Call tool %%TOOL_NAME%% exactly once with JSON arguments only.
+Do not output prose.
+
+Valid scopeDecision alternatives (must be one):
+- session
+- workspace
+- global
+- unknown
+
+Decision guidance:
+- session:
+  - temporary or per-session behavior,
+  - experimental changes,
+  - changes that should not affect future sessions.
+- workspace:
+  - repository-specific policy,
+  - team/project-local defaults,
+  - behavior intended for this working tree only.
+- global:
+  - user-wide defaults,
+  - behavior intended across repositories.
+- unknown:
+  - request is ambiguous,
+  - request can reasonably fit multiple scopes,
+  - request lacks enough intent to choose safely.
+
+Scope precedence reminder:
+- session overrides workspace/global,
+- workspace overrides global,
+- only one scope file is selected at launch.
+
+Output requirements:
+- Always provide non-empty values for:
+  - scopeDecision
+  - reasoning
+  - changeMode
+  - effectSummary
+- Provide conflictSummary when relevant; otherwise use "none".
+
+Input:
+User request:
+%%REQUEST_TEXT%%
+
+Candidate target files:
+- session: %%SESSION_CONFIG_PATH%%
+- workspace: %%WORKSPACE_CONFIG_PATH%%
+- global: %%GLOBAL_CONFIG_PATH%%

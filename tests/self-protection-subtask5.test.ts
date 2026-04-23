@@ -1,0 +1,84 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+	buildLockedSettingsContent,
+	computeProtectedWritePaths,
+	writeLockedSettingsFile,
+} from "../launcher/self-protection.ts";
+
+test("computeProtectedWritePaths normalizes, includes config and control-plane paths", () => {
+	const paths = computeProtectedWritePaths({
+		projectRoot: "/workspace/pi-fenced/.",
+		fencePaths: {
+			globalConfigPath: "/Users/test/.pi/agent/fence/../fence/global.json",
+			fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
+		},
+	});
+
+	assert.deepEqual(paths, [
+		"/workspace/pi-fenced/launcher",
+		"/workspace/pi-fenced/apply",
+		"/Users/test/.pi/agent/fence/global.json",
+		"/Users/test/.pi/agent/fence",
+		"/Users/test/.config/fence/fence.json",
+		"/Users/test/.config/fence",
+	]);
+});
+
+test("buildLockedSettingsContent produces valid JSON with extends and denyWrite", () => {
+	const content = buildLockedSettingsContent("/Users/test/.pi/agent/fence/global.json", [
+		"/workspace/pi-fenced/launcher",
+		"/workspace/pi-fenced/apply",
+	]);
+
+	const parsed = JSON.parse(content) as {
+		extends: string;
+		filesystem: { denyWrite: string[] };
+	};
+	assert.equal(parsed.extends, "/Users/test/.pi/agent/fence/global.json");
+	assert.deepEqual(parsed.filesystem.denyWrite, [
+		"/workspace/pi-fenced/launcher",
+		"/workspace/pi-fenced/apply",
+	]);
+	assert.equal(content.endsWith("\n"), true);
+});
+
+test("writeLockedSettingsFile writes launcher-locked settings file", () => {
+	const writes: Array<{ path: string; content: string }> = [];
+	const mkdirs: string[] = [];
+
+	const result = writeLockedSettingsFile(
+		{
+			runtimeRoot: "/tmp/pi/runtime-root",
+			projectRoot: "/workspace/pi-fenced",
+			fencePaths: {
+				globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
+				fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
+			},
+		},
+		{
+			mkdirSync: (pathValue) => mkdirs.push(pathValue),
+			writeFileSync: (pathValue, content) => writes.push({ path: pathValue, content }),
+		},
+	);
+
+	assert.equal(result.settingsPath, "/tmp/pi/runtime-root/runtime/launcher-locked-settings.json");
+	assert.equal(mkdirs.length, 1);
+	assert.equal(mkdirs[0], "/tmp/pi/runtime-root/runtime");
+	assert.equal(writes.length, 1);
+	assert.equal(writes[0].path, "/tmp/pi/runtime-root/runtime/launcher-locked-settings.json");
+
+	const parsed = JSON.parse(writes[0].content) as {
+		extends: string;
+		filesystem: { denyWrite: string[] };
+	};
+	assert.equal(parsed.extends, "/Users/test/.pi/agent/fence/global.json");
+	assert.deepEqual(parsed.filesystem.denyWrite, [
+		"/workspace/pi-fenced/launcher",
+		"/workspace/pi-fenced/apply",
+		"/Users/test/.pi/agent/fence/global.json",
+		"/Users/test/.pi/agent/fence",
+		"/Users/test/.config/fence/fence.json",
+		"/Users/test/.config/fence",
+	]);
+});

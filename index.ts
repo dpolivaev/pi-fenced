@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import {
 	complete,
 	validateToolArguments,
@@ -15,31 +14,19 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import {
 	applyExactEdits,
 	buildEditProposalPreview,
-	buildMutationProposalPrompt,
-	buildScopeAnalysisPrompt,
 	buildWriteProposalPreview,
 	createMutationProposalTool,
-	createScopeDecisionTool,
 	ensureValidFenceConfigContent,
 	toMutationProposal,
-	toScopeAnalysis,
-	type FenceConfigScope,
 	type MutationProposalToolArguments,
-	type ScopeDecisionToolArguments,
-	type ScopeSource,
 } from "./configure-fence.ts";
-
-interface ScopePaths {
-	sessionConfigPath: string;
-	workspaceConfigPath: string;
-	globalConfigPath: string;
-}
+import { resolveFencePaths } from "./launcher/path-resolution.ts";
 
 interface FenceConfigChangeRequest {
 	version: 1;
 	requestId: string;
 	createdAt: string;
-	scope: FenceConfigScope;
+	scope: "global";
 	targetPath: string;
 	proposalPath: string;
 	mutationType: "replace";
@@ -48,42 +35,137 @@ interface FenceConfigChangeRequest {
 	summary: string;
 }
 
-const PI_FENCED_ROOT = "/tmp/pi-fenced";
+export interface MutationPromptInput {
+	requestText: string;
+	targetPath: string;
+	existingContent?: string;
+}
+
+export const PI_FENCED_ROOT = "/tmp/pi-fenced";
 const STRUCTURED_TOOL_ATTEMPTS = 3;
+const UNMANAGED_RUNTIME_WARNING =
+	"pi-fenced extension requires launcher-managed runtime. " +
+	"Run PI via pi-fenced. Shutting down.";
 
-const CONFIGURE_SCOPE_SYSTEM_PROMPT =
-	"You classify fence configuration scope. " +
-	"Always call the provided tool exactly once.";
-const CONFIGURE_MUTATION_SYSTEM_PROMPT =
-	"You produce fence configuration mutations. " +
-	"Always call the provided tool exactly once.";
+const MUTATION_SYSTEM_PROMPT_TEMPLATE_URL = new URL(
+	"./prompts/configure-fence/mutation-system.prompt.txt",
+	import.meta.url,
+);
+const MUTATION_PROMPT_TEMPLATE_URL = new URL(
+	"./prompts/configure-fence/mutation-proposal.prompt.txt",
+	import.meta.url,
+);
+const FENCE_CONFIGURATION_REFERENCE_PROMPT_URL = new URL(
+	"./prompts/configure-fence/fence-configuration-reference.prompt.txt",
+	import.meta.url,
+);
 
-const scopeDecisionTool = createScopeDecisionTool();
 const mutationProposalTool = createMutationProposalTool();
+let mutationSystemPromptCache: string | undefined;
+let mutationPromptTemplateCache: string | undefined;
+let fenceConfigurationReferencePromptCache: string | undefined;
 
-function getScopePaths(ctx: ExtensionContext): ScopePaths {
-	const sessionId = ctx.sessionManager.getSessionId();
+export function isLauncherManagedRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.PI_FENCED_LAUNCHER === "1";
+}
+
+export function resolveGlobalConfigTargetPath(env: NodeJS.ProcessEnv = process.env): string {
+	return resolveFencePaths({ env }).globalConfigPath;
+}
+
+export function composeShowFenceConfigOutput(stderr: string, stdout: string): string {
+	return `${stderr}${stdout}`;
+}
+
+export function buildGlobalRequestEnvelope(input: {
+	requestId: string;
+	targetPath: string;
+	proposalPath: string;
+	existingContent?: string;
+	summary: string;
+	createdAt?: string;
+}): FenceConfigChangeRequest {
+	const baseContent = input.existingContent ?? "";
 	return {
-		sessionConfigPath: join(PI_FENCED_ROOT, "sessions", sessionId, "fence.json"),
-		workspaceConfigPath: join(ctx.cwd, "fence.json"),
-		globalConfigPath: join(homedir(), ".config", "fence", "fence.json"),
+		version: 1,
+		requestId: input.requestId,
+		createdAt: input.createdAt ?? new Date().toISOString(),
+		scope: "global",
+		targetPath: input.targetPath,
+		proposalPath: input.proposalPath,
+		mutationType: "replace",
+		baseSha256: sha256(baseContent),
+		requestedBy: "pi-fenced-extension",
+		summary: input.summary,
 	};
 }
 
-function getTargetPathForScope(scope: FenceConfigScope, paths: ScopePaths): string {
-	switch (scope) {
-		case "session":
-			return paths.sessionConfigPath;
-		case "workspace":
-			return paths.workspaceConfigPath;
-		case "global":
-			return paths.globalConfigPath;
+function getMutationSystemPromptTemplate(): string {
+	if (mutationSystemPromptCache !== undefined) {
+		return mutationSystemPromptCache;
 	}
+	mutationSystemPromptCache = readFileSync(MUTATION_SYSTEM_PROMPT_TEMPLATE_URL, "utf-8");
+	return mutationSystemPromptCache;
 }
 
-function formatScopeSource(source: ScopeSource): string {
-	if (source === "llm") return "LLM decision";
-	return "User selected after LLM unknown";
+function getMutationPromptTemplate(): string {
+	if (mutationPromptTemplateCache !== undefined) {
+		return mutationPromptTemplateCache;
+	}
+	mutationPromptTemplateCache = readFileSync(MUTATION_PROMPT_TEMPLATE_URL, "utf-8");
+	return mutationPromptTemplateCache;
+}
+
+function getFenceConfigurationReferencePrompt(): string {
+	if (fenceConfigurationReferencePromptCache !== undefined) {
+		return fenceConfigurationReferencePromptCache;
+	}
+	fenceConfigurationReferencePromptCache = readFileSync(
+		FENCE_CONFIGURATION_REFERENCE_PROMPT_URL,
+		"utf-8",
+	);
+	return fenceConfigurationReferencePromptCache;
+}
+
+function applyTemplateReplacements(
+	template: string,
+	replacements: Record<string, string>,
+): string {
+	let rendered = template;
+	for (const [key, value] of Object.entries(replacements)) {
+		rendered = rendered.replaceAll(`%%${key}%%`, value);
+	}
+	return rendered;
+}
+
+function buildExistingTargetContext(existingContent: string | undefined): string {
+	if (existingContent === undefined) {
+		return "Target file does not exist.";
+	}
+
+	return ["```json", existingContent, "```"].join("\n");
+}
+
+export function buildMutationSystemPrompt(): string {
+	return applyTemplateReplacements(getMutationSystemPromptTemplate(), {
+		FENCE_CONFIGURATION_REFERENCE: getFenceConfigurationReferencePrompt(),
+	});
+}
+
+export function buildMutationPrompt(input: MutationPromptInput): string {
+	const template = getMutationPromptTemplate();
+	return applyTemplateReplacements(template, {
+		TOOL_NAME: mutationProposalTool.name,
+		RESOLVED_SCOPE: "global",
+		TARGET_PATH: input.targetPath,
+		REQUEST_TEXT: input.requestText,
+		SCOPE_REASONING:
+			"Global-only v1 mode: /configure-fence always targets the PI global config file.",
+		SCOPE_EFFECT_SUMMARY:
+			"Requested change applies to launcher-managed PI sessions through the global config.",
+		SCOPE_CONFLICT_SUMMARY: "none",
+		EXISTING_TARGET_CONTEXT: buildExistingTargetContext(input.existingContent),
+	});
 }
 
 function createUserTextMessage(text: string): UserMessage {
@@ -154,11 +236,12 @@ async function completeOutOfBandStructuredCall<TArgs>(
 		if (toolCalls.length === 0) {
 			if (attempt === STRUCTURED_TOOL_ATTEMPTS) {
 				throw new Error(
-					`Model did not call required tool \"${options.tool.name}\" after ${STRUCTURED_TOOL_ATTEMPTS} attempts.`,
+					`Model did not call required tool "${options.tool.name}" ` +
+						`after ${STRUCTURED_TOOL_ATTEMPTS} attempts.`,
 				);
 			}
 			messages.push(
-				createUserTextMessage(`Call tool \"${options.tool.name}\" exactly once. Do not return prose.`),
+				createUserTextMessage(`Call tool "${options.tool.name}" exactly once. Do not return prose.`),
 			);
 			continue;
 		}
@@ -166,11 +249,14 @@ async function completeOutOfBandStructuredCall<TArgs>(
 		if (toolCalls.length > 1) {
 			if (attempt === STRUCTURED_TOOL_ATTEMPTS) {
 				throw new Error(
-					`Model called ${toolCalls.length} tools, expected exactly one call to \"${options.tool.name}\".`,
+					`Model called ${toolCalls.length} tools, expected exactly one ` +
+						`call to "${options.tool.name}".`,
 				);
 			}
 			messages.push(
-				createUserTextMessage(`Call tool \"${options.tool.name}\" exactly once in the next response.`),
+				createUserTextMessage(
+					`Call tool "${options.tool.name}" exactly once in the next response.`,
+				),
 			);
 			continue;
 		}
@@ -179,13 +265,15 @@ async function completeOutOfBandStructuredCall<TArgs>(
 		if (toolCall.name !== options.tool.name) {
 			if (attempt === STRUCTURED_TOOL_ATTEMPTS) {
 				throw new Error(
-					`Model called unexpected tool \"${toolCall.name}\", expected \"${options.tool.name}\".`,
+					`Model called unexpected tool "${toolCall.name}", expected ` +
+						`"${options.tool.name}".`,
 				);
 			}
 			messages.push(
 				createToolErrorResult(
 					toolCall,
-					`Unexpected tool \"${toolCall.name}\". Call \"${options.tool.name}\" instead.`,
+					`Unexpected tool "${toolCall.name}". ` +
+						`Call "${options.tool.name}" instead.`,
 				),
 			);
 			continue;
@@ -196,15 +284,19 @@ async function completeOutOfBandStructuredCall<TArgs>(
 			return args;
 		} catch (error) {
 			const errorText =
-				error instanceof Error ? error.message : `Tool argument validation failed: ${String(error)}`;
+				error instanceof Error
+					? error.message
+					: `Tool argument validation failed: ${String(error)}`;
 			if (attempt === STRUCTURED_TOOL_ATTEMPTS) {
-				throw new Error(`Model produced invalid arguments for \"${options.tool.name}\": ${errorText}`);
+				throw new Error(
+					`Model produced invalid arguments for "${options.tool.name}": ${errorText}`,
+				);
 			}
 			messages.push(createToolErrorResult(toolCall, errorText));
 		}
 	}
 
-	throw new Error(`Failed to obtain structured output via tool \"${options.tool.name}\".`);
+	throw new Error(`Failed to obtain structured output via tool "${options.tool.name}".`);
 }
 
 function sha256(content: string): string {
@@ -219,33 +311,39 @@ function buildRequestPath(requestId: string): string {
 	return join(PI_FENCED_ROOT, "control", `request-${requestId}.json`);
 }
 
-function buildRequestEnvelope(input: {
-	requestId: string;
-	scope: FenceConfigScope;
-	targetPath: string;
-	proposalPath: string;
-	existingContent?: string;
-	summary: string;
-}): FenceConfigChangeRequest {
-	const baseContent = input.existingContent ?? "";
-	return {
-		version: 1,
-		requestId: input.requestId,
-		createdAt: new Date().toISOString(),
-		scope: input.scope,
-		targetPath: input.targetPath,
-		proposalPath: input.proposalPath,
-		mutationType: "replace",
-		baseSha256: sha256(baseContent),
-		requestedBy: "pi-fenced-extension",
-		summary: input.summary,
-	};
+function toErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
-export default function (pi: ExtensionAPI) {
+function warnAndShutdownForUnmanagedRuntime(ctx: ExtensionContext): void {
+	ctx.ui.notify(UNMANAGED_RUNTIME_WARNING, "warning");
+	ctx.shutdown();
+}
+
+export function registerPiFencedExtension(
+	pi: ExtensionAPI,
+	env: NodeJS.ProcessEnv = process.env,
+): void {
+	if (!isLauncherManagedRuntime(env)) {
+		pi.on("session_start", (_event, ctx) => {
+			warnAndShutdownForUnmanagedRuntime(ctx);
+		});
+		return;
+	}
+
+	pi.on("session_start", (_event, ctx) => {
+		const runtimeMode = env.FENCE_SANDBOX === "1" ? "launcher:fenced" : "launcher:without-fence";
+		ctx.ui.setStatus("pi-fenced", runtimeMode);
+	});
+
 	pi.registerCommand("configure-fence", {
 		description: "Guided out-of-band fence configuration proposal with external apply handoff",
 		handler: async (args, ctx) => {
+			if (!isLauncherManagedRuntime(env)) {
+				warnAndShutdownForUnmanagedRuntime(ctx);
+				return;
+			}
+
 			let requestText = args.trim();
 			if (requestText.length === 0) {
 				requestText =
@@ -266,70 +364,22 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const scopePaths = getScopePaths(ctx);
+			const targetPath = resolveGlobalConfigTargetPath(env);
+			const existingContent = existsSync(targetPath)
+				? readFileSync(targetPath, "utf-8")
+				: undefined;
 
 			try {
-				ctx.ui.notify("/configure-fence: analyzing scope...", "info");
-				const scopePrompt = buildScopeAnalysisPrompt({
-					requestText,
-					sessionConfigPath: scopePaths.sessionConfigPath,
-					workspaceConfigPath: scopePaths.workspaceConfigPath,
-					globalConfigPath: scopePaths.globalConfigPath,
-				});
-				const scopeArgs = await completeOutOfBandStructuredCall<ScopeDecisionToolArguments>(ctx, {
-					systemPrompt: CONFIGURE_SCOPE_SYSTEM_PROMPT,
-					userPrompt: scopePrompt,
-					tool: scopeDecisionTool,
-				});
-				const scopeAnalysis = toScopeAnalysis(scopeArgs);
-
-				let resolvedScope: FenceConfigScope;
-				let scopeSource: ScopeSource;
-				if (scopeAnalysis.scopeDecision === "unknown") {
-					const scopeSelection = await ctx.ui.select(
-						"LLM scope decision is unknown. Apply change to:",
-						[
-							"session (/tmp/pi-fenced/sessions/<session-id>/fence.json)",
-							"workspace (./fence.json)",
-							"global (~/.config/fence/fence.json)",
-						],
-					);
-					if (!scopeSelection) {
-						ctx.ui.notify("/configure-fence cancelled", "info");
-						return;
-					}
-					if (scopeSelection.startsWith("session")) {
-						resolvedScope = "session";
-					} else if (scopeSelection.startsWith("workspace")) {
-						resolvedScope = "workspace";
-					} else {
-						resolvedScope = "global";
-					}
-					scopeSource = "user-after-unknown";
-				} else {
-					resolvedScope = scopeAnalysis.scopeDecision;
-					scopeSource = "llm";
-				}
-
-				const targetPath = getTargetPathForScope(resolvedScope, scopePaths);
-				const existingContent = existsSync(targetPath)
-					? readFileSync(targetPath, "utf-8")
-					: undefined;
-
 				ctx.ui.notify("/configure-fence: generating mutation proposal...", "info");
-				const mutationPrompt = buildMutationProposalPrompt({
+				const mutationPrompt = buildMutationPrompt({
 					requestText,
-					resolvedScope,
 					targetPath,
-					scopeReasoning: scopeAnalysis.reasoning,
-					scopeEffectSummary: scopeAnalysis.effectSummary,
-					scopeConflictSummary: scopeAnalysis.conflictSummary,
 					existingContent,
 				});
 				const mutationArgs = await completeOutOfBandStructuredCall<MutationProposalToolArguments>(
 					ctx,
 					{
-						systemPrompt: CONFIGURE_MUTATION_SYSTEM_PROMPT,
+						systemPrompt: buildMutationSystemPrompt(),
 						userPrompt: mutationPrompt,
 						tool: mutationProposalTool,
 					},
@@ -344,7 +394,8 @@ export default function (pi: ExtensionAPI) {
 				} else {
 					if (existingContent === undefined) {
 						throw new Error(
-							"LLM proposed edit for a missing config file. Retry and force mutationType=write.",
+							"LLM proposed edit for a missing config file. " +
+								"Retry and force mutationType=write.",
 						);
 					}
 					const editedContent = applyExactEdits(existingContent, mutation.edits);
@@ -355,16 +406,14 @@ export default function (pi: ExtensionAPI) {
 				const allowChange = await ctx.ui.confirm(
 					"Queue external fence configuration change?",
 					`${preview}\n\n` +
-						`Resolved scope: ${resolvedScope}\n` +
-						`Scope source: ${formatScopeSource(scopeSource)}\n` +
-						`LLM scope decision: ${scopeAnalysis.scopeDecision}\n` +
-						`Scope reasoning: ${scopeAnalysis.reasoning}\n` +
+						`Resolved scope: global (fixed in v1)\n` +
 						`Target path: ${targetPath}\n` +
 						`Mutation type: ${mutation.mutationType}\n` +
 						`Mutation intent: ${mutation.changeMode}\n` +
 						`Effect summary: ${mutation.effectSummary}\n` +
 						`Conflict summary: ${mutation.conflictSummary}\n\n` +
-						"This will write a proposal + request under /tmp/pi-fenced and hand off to external apply.",
+						"This will write a proposal + request under /tmp/pi-fenced " +
+						"and hand off to external apply.",
 				);
 				if (!allowChange) {
 					ctx.ui.notify("/configure-fence cancelled by user", "warning");
@@ -374,9 +423,8 @@ export default function (pi: ExtensionAPI) {
 				const requestId = randomUUID();
 				const proposalPath = buildProposalPath(requestId);
 				const requestPath = buildRequestPath(requestId);
-				const requestEnvelope = buildRequestEnvelope({
+				const requestEnvelope = buildGlobalRequestEnvelope({
 					requestId,
-					scope: resolvedScope,
 					targetPath,
 					proposalPath,
 					existingContent,
@@ -399,15 +447,52 @@ export default function (pi: ExtensionAPI) {
 					"Shutdown PI now so the outside launcher can run apply/reject flow and restart.",
 				);
 				if (shouldShutdown) {
-					ctx.ui.notify("Shutting down PI for external fence apply handoff...", "warning");
+					ctx.ui.notify(
+						"Shutting down PI for external fence apply handoff...",
+						"warning",
+					);
 					ctx.shutdown();
 				}
 			} catch (error) {
-				ctx.ui.notify(
-					`/configure-fence failed: ${error instanceof Error ? error.message : String(error)}`,
-					"error",
-				);
+				ctx.ui.notify(`/configure-fence failed: ${toErrorMessage(error)}`, "error");
 			}
 		},
 	});
+
+	pi.registerCommand("show-fence-config", {
+		description:
+			"Show effective Fence config for the PI global target using fence config show",
+		handler: async (_args, ctx) => {
+			if (!isLauncherManagedRuntime(env)) {
+				warnAndShutdownForUnmanagedRuntime(ctx);
+				return;
+			}
+
+			const targetPath = resolveGlobalConfigTargetPath(env);
+			try {
+				const result = await pi.exec(
+					"fence",
+					["config", "show", "--settings", targetPath],
+					{ cwd: ctx.cwd, signal: ctx.signal },
+				);
+
+				const outputText = composeShowFenceConfigOutput(result.stderr, result.stdout);
+				await ctx.ui.editor("/show-fence-config", outputText.length > 0 ? outputText : "(no output)\n");
+
+				if (result.killed || result.code !== 0) {
+					ctx.ui.notify(
+						`/show-fence-config exited with code ${result.code}` +
+							(result.killed ? " (killed)" : ""),
+						"warning",
+					);
+				}
+			} catch (error) {
+				ctx.ui.notify(`/show-fence-config failed: ${toErrorMessage(error)}`, "error");
+			}
+		},
+	});
+}
+
+export default function (pi: ExtensionAPI): void {
+	registerPiFencedExtension(pi);
 }

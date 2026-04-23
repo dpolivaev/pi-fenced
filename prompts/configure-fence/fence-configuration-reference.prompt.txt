@@ -1,0 +1,91 @@
+Fence configuration domain reference (canonical summary)
+
+This reference describes the runtime config domain (not tool-output
+schema). Use only valid Fence field names and semantics.
+
+Top-level object (type=object, additionalProperties=false):
+- "$schema": string URI (optional)
+- "extends": string (template name, @base, relative path, or absolute
+  path)
+- "network": object
+- "filesystem": object
+- "devices": object
+- "command": object
+- "ssh": object
+- "macos": object (macOS-specific)
+- "allowPty": boolean
+- "forceNewSession": boolean|null
+
+Network object (additionalProperties=false):
+- allowedDomains: string[]
+- deniedDomains: string[] (evaluated before allowedDomains)
+- allowUnixSockets: string[]
+- allowAllUnixSockets: boolean
+- allowLocalBinding: boolean
+- allowLocalOutbound: boolean|null (inherits allowLocalBinding if null)
+- httpProxyPort: integer
+- socksProxyPort: integer
+
+Filesystem object (additionalProperties=false):
+- allowRead: string[]
+- allowExecute: string[]
+- allowWrite: string[]
+- denyRead: string[]
+- denyWrite: string[]
+- allowGitConfig: boolean
+- defaultDenyRead: boolean
+- strictDenyRead: boolean
+- wslInterop: boolean|null
+
+Devices object (additionalProperties=false):
+- mode: "auto" | "minimal" | "host"
+- allow: string[] (must be /dev/... paths)
+
+Command object (additionalProperties=false):
+- deny: string[]
+- allow: string[]
+- useDefaults: boolean|null
+- runtimeExecPolicy: "path" | "argv"
+- acceptSharedBinaryCannotRuntimeDeny: string[]
+
+SSH object (additionalProperties=false):
+- allowedHosts: string[]
+- deniedHosts: string[]
+- allowedCommands: string[]
+- deniedCommands: string[]
+- allowAllCommands: boolean
+- inheritDeny: boolean
+
+macos object (additionalProperties=false):
+- mach.lookup: string[] (exact, trailing wildcard, or "*")
+- mach.register: string[] (exact, trailing wildcard, or "*")
+
+Extends resolution semantics:
+- "@base" = user's default Fence config file (or Fence built-in default
+  when user base missing)
+- values containing "/" or "\\", or starting with ".", are file paths
+- other values are template names
+- relative paths resolve from current config file directory
+- extends chains are allowed; circular chains are rejected
+- max extends depth: 10
+
+Merge semantics (child overrides/extends base):
+- arrays: append + dedupe
+- booleans: OR semantics
+- optional booleans (e.g., useDefaults): child wins when set,
+  otherwise inherit parent
+- enum/string fields: child wins when non-empty
+- integer fields (ports): override-wins; 0 keeps base value
+
+Important evaluation semantics:
+- command.allow can carve exceptions out of command.deny prefixes
+- deniedDomains evaluated before allowedDomains
+- ssh deniedHosts evaluated before allowedHosts
+- ssh allowlist vs denylist behavior depends on allowAllCommands
+
+Authoring constraints for generated config:
+- Preserve unrelated existing settings unless user explicitly requests
+  removal.
+- Do not invent unknown keys.
+- Keep value types exact (arrays stay arrays, booleans stay booleans).
+- Use canonical Fence field names exactly as listed above.

@@ -6,11 +6,14 @@ Draft
 
 ## Context
 
-This project defines a Fence-first runtime model for PI:
+This project defines a launcher-first runtime model for PI:
 
-- PI always runs inside Fence.
+- PI must run through `pi-fenced` launcher.
+- Launcher defaults to running PI inside Fence, with an explicit
+  `--without-fence` mode for diagnostics.
 - Sandbox policy changes are requested from inside PI but applied outside PI.
-- Active Fence configuration files are not writable from inside PI.
+- Active Fence configuration files are not writable from inside PI when
+  running fenced.
 - Configuration precedence is strict and non-merged:
   `session > workspace > global`.
 
@@ -18,8 +21,9 @@ This design targets deterministic behavior and a clean privilege boundary.
 
 ## Goals
 
-- Use Fence as the single enforcement layer for PI tool execution.
-- Keep policy mutation outside the fenced PI process.
+- Require launcher-mediated PI execution (`pi-fenced`) at all times.
+- Use Fence as the default enforcement layer for PI tool execution.
+- Keep policy mutation outside the PI process.
 - Support explicit apply/reject with rollback safety.
 - Preserve clear scope semantics for policy selection.
 
@@ -29,7 +33,7 @@ This design targets deterministic behavior and a clean privilege boundary.
 - No config merging across scopes.
 - No new Fence config syntax.
 
-## Scope resolution (no merge)
+## Scope resolution (single scope)
 
 At PI startup, the launcher selects exactly one active config:
 
@@ -40,31 +44,53 @@ At PI startup, the launcher selects exactly one active config:
 
 Rules:
 
-- Only one config is active at a time.
-- No `extends` usage in active scope files.
-- If `extends` is found in an active-scope file, fail fast with guidance.
+- Only one scope file is selected at a time.
+- The selected file may use Fence inheritance (`extends`), including
+  standard templates such as `"code"`.
+- No merging happens across scope levels (`session`, `workspace`,
+  `global`); any merge behavior comes only from Fence resolving the
+  selected file's own extends chain.
 
 ## Runtime activation guard
 
-The extension runs in one of two modes.
+The extension runs in one of three modes.
 
-Active mode (full feature registration) requires both conditions:
+### 1) Launcher-managed fenced mode
 
-- `FENCE_SANDBOX=1` (set by Fence runtime)
-- `PI_FENCED_LAUNCHER=1` (set by `pi-fenced.sh` launcher)
+Conditions:
 
-When active mode is satisfied, the extension:
+- `PI_FENCED_LAUNCHER=1`
+- `FENCE_SANDBOX=1`
 
-- registers `/configure-fence` and related functional handlers,
-- sets status line key `pi-fenced` to indicate managed Fence runtime is
-  active.
+Behavior:
 
-When either guard condition is missing, the extension enters disabled
-mode:
+- register `/configure-fence` and related functional handlers,
+- set status line key `pi-fenced` to indicate managed fenced runtime.
 
-- it does not register functional command/tool behavior,
-- it still sets status line key `pi-fenced` to indicate no managed
-  Fence runtime is active.
+### 2) Launcher-managed unfenced mode
+
+Conditions:
+
+- `PI_FENCED_LAUNCHER=1`
+- `FENCE_SANDBOX` is not `1` (launcher `--without-fence` mode)
+
+Behavior:
+
+- register `/configure-fence` and related functional handlers,
+- set status line key `pi-fenced` to indicate managed launcher runtime
+  without Fence.
+
+### 3) Unmanaged mode (outside launcher)
+
+Condition:
+
+- `PI_FENCED_LAUNCHER` is missing or not `1`
+
+Behavior:
+
+- refuse runtime outside launcher,
+- do not register functional command/tool behavior,
+- notify user to run PI through `pi-fenced`, then shutdown.
 
 ## Architecture
 
@@ -73,24 +99,40 @@ mode:
 Responsibilities:
 
 - Resolve active config by strict precedence.
-- Start PI under Fence:
+- Support launcher options:
+  - `--fence-monitor` to pass monitor mode to Fence (`-m`),
+  - `--without-fence` to run PI without Fence,
+  - PI arguments pass-through after `--`.
+- Start PI in one of two launcher-controlled modes:
+
+Fenced (default):
 
 ```bash
-fence --settings <active-config> -- pi <args>
+fence [-m] --settings <active-config> -- pi <pi-args>
 ```
+
+Unfenced (`--without-fence`):
+
+```bash
+pi <pi-args>
+```
+
+In both modes, set `PI_FENCED_LAUNCHER=1` in PI environment.
 
 - After PI exits, inspect a control directory for config-change requests.
 - If a request exists, run external apply workflow.
-- Restart PI after apply or reject.
+- Restart PI after apply or reject, preserving launcher mode and PI args.
 
-### 2) PI extension (inside Fence)
+### 2) PI extension (launcher-managed runtime)
 
 Responsibilities:
 
-- Evaluate runtime guard (`FENCE_SANDBOX` +
-  `PI_FENCED_LAUNCHER`) on startup.
-- Publish `pi-fenced` status line in both active and disabled modes.
-- Register `/configure-fence` and related handlers only in active mode.
+- Evaluate launcher guard (`PI_FENCED_LAUNCHER`) on startup.
+- Refuse runtime when guard fails (outside launcher).
+- Detect fenced vs unfenced launcher mode via `FENCE_SANDBOX`.
+- Publish `pi-fenced` status line for fenced/unfenced launcher modes.
+- Register `/configure-fence` and related handlers only in
+  launcher-managed modes.
 - Build a proposal file and a request envelope in `/tmp/pi-fenced/...`.
 - Never write active config files directly.
 - Trigger graceful shutdown so the launcher can handle the request.
@@ -101,7 +143,7 @@ Responsibilities:
 
 - Read the request/proposal.
 - Validate request integrity and base hash.
-- Show diff and request user approval.
+- Show a human-readable unified diff and request user approval.
 - Apply or reject.
 - On apply: backup + atomic replace + validation + restart handoff.
 - On failure: rollback from backup.
@@ -139,7 +181,8 @@ Scope targets:
 
 Notes:
 
-- `mutationType` is `replace` for deterministic atomic updates.
+- `mutationType` remains `replace` for deterministic atomic updates.
+  Proposal content is stored as full file content, not as JSON Patch.
 - `baseSha256` protects against stale apply.
 
 ## Apply flow
@@ -147,13 +190,14 @@ Notes:
 1. Read request envelope.
 2. Verify `targetPath` matches allowed path for scope.
 3. Verify `baseSha256` against current target file (or empty baseline).
-4. Validate proposal with Fence tooling:
+4. Validate proposal with Fence tooling (including template extends
+   resolution):
 
 ```bash
 fence config show --settings <proposalPath>
 ```
 
-5. Show diff (`current -> proposal`) and prompt:
+5. Show unified diff (`current -> proposal`) and prompt:
    - Apply
    - Reject
 6. If Apply:
@@ -174,10 +218,13 @@ fence config show --settings <proposalPath>
   - deny write for workspace/global active config paths.
   - allow write only to `/tmp/pi-fenced/**` for requests/proposals.
 - Extension runtime guard:
-  - outside managed runtime, extension self-disables functional
-    behavior and shows status that no managed Fence runtime is active.
+  - outside launcher-managed runtime, extension refuses startup and
+    requests shutdown.
 - Outside Fence:
   - only launcher/applier has permission to mutate active configs.
+- Unfenced launcher mode:
+  - intentionally bypasses sandboxing for diagnostics,
+  - keeps launcher ownership and external apply boundaries.
 - Supervisor executes with user-level privileges only (no sudo).
 
 ## Failure handling
@@ -189,12 +236,13 @@ fence config show --settings <proposalPath>
 
 ## Implementation milestones
 
-1. Scaffold `pi-fenced` launcher CLI.
+1. Scaffold `pi-fenced` launcher CLI with PI arg pass-through.
 2. Add strict scope resolver (`session > workspace > global`).
-3. Add external `pi-fenced-apply` command with backup/rollback.
-4. Build PI extension request/proposal flow.
-5. Add end-to-end tests for apply/reject/rollback paths.
-6. Add docs and operational runbook.
+3. Add launcher mode flags (`--fence-monitor`, `--without-fence`).
+4. Add external `pi-fenced-apply` command with backup/rollback.
+5. Build PI extension launcher-guard + request/proposal flow.
+6. Add end-to-end tests for apply/reject/rollback/restart paths.
+7. Add docs and operational runbook.
 
 ## Open questions
 

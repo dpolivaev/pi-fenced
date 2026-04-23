@@ -1,0 +1,195 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import test from "node:test";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import {
+	buildGlobalRequestEnvelope,
+	composeShowFenceConfigOutput,
+	isLauncherManagedRuntime,
+	registerPiFencedExtension,
+} from "../index.ts";
+
+interface RegisteredCommand {
+	description?: string;
+	handler: (args: string, ctx: any) => Promise<void>;
+}
+
+interface FakeApiHarness {
+	api: ExtensionAPI;
+	commands: Map<string, RegisteredCommand>;
+	sessionStartHandlers: Array<(event: unknown, ctx: unknown) => Promise<void> | void>;
+	execCalls: Array<{ command: string; args: string[] }>;
+}
+
+function createFakeApiHarness(options?: {
+	execResult?: { stdout: string; stderr: string; code: number; killed: boolean };
+}): FakeApiHarness {
+	const commands = new Map<string, RegisteredCommand>();
+	const sessionStartHandlers: Array<(event: unknown, ctx: unknown) => Promise<void> | void> = [];
+	const execCalls: Array<{ command: string; args: string[] }> = [];
+
+	const execResult =
+		options?.execResult ??
+		({ stdout: "", stderr: "", code: 0, killed: false } as {
+			stdout: string;
+			stderr: string;
+			code: number;
+			killed: boolean;
+		});
+
+	const api = {
+		registerCommand: (name: string, command: RegisteredCommand) => {
+			commands.set(name, command);
+		},
+		on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<void> | void) => {
+			if (event === "session_start") {
+				sessionStartHandlers.push(handler);
+			}
+		},
+		exec: async (command: string, args: string[]) => {
+			execCalls.push({ command, args });
+			return execResult;
+		},
+	} as unknown as ExtensionAPI;
+
+	return {
+		api,
+		commands,
+		sessionStartHandlers,
+		execCalls,
+	};
+}
+
+test("isLauncherManagedRuntime returns true only when PI_FENCED_LAUNCHER=1", () => {
+	assert.equal(isLauncherManagedRuntime({ PI_FENCED_LAUNCHER: "1" }), true);
+	assert.equal(isLauncherManagedRuntime({ PI_FENCED_LAUNCHER: "0" }), false);
+	assert.equal(isLauncherManagedRuntime({}), false);
+});
+
+test("registerPiFencedExtension unmanaged mode warns and shuts down", async () => {
+	const harness = createFakeApiHarness();
+	registerPiFencedExtension(harness.api, { PI_FENCED_LAUNCHER: "0" });
+
+	assert.equal(harness.commands.size, 0);
+	assert.equal(harness.sessionStartHandlers.length, 1);
+
+	const notifications: Array<{ message: string; type: string | undefined }> = [];
+	let shutdownCalls = 0;
+	await harness.sessionStartHandlers[0](
+		{ type: "session_start", reason: "startup" },
+		{
+			ui: {
+				notify: (message: string, type?: string) => notifications.push({ message, type }),
+			},
+			shutdown: () => {
+				shutdownCalls += 1;
+			},
+		},
+	);
+
+	assert.equal(shutdownCalls, 1);
+	assert.equal(notifications.length, 1);
+	assert.match(notifications[0].message, /launcher-managed runtime/);
+	assert.equal(notifications[0].type, "warning");
+});
+
+test("registerPiFencedExtension managed mode registers commands", async () => {
+	const harness = createFakeApiHarness();
+	registerPiFencedExtension(harness.api, {
+		PI_FENCED_LAUNCHER: "1",
+		FENCE_SANDBOX: "1",
+	});
+
+	assert.equal(harness.commands.has("configure-fence"), true);
+	assert.equal(harness.commands.has("show-fence-config"), true);
+	assert.equal(harness.sessionStartHandlers.length, 1);
+
+	const statuses: Array<{ key: string; text: string | undefined }> = [];
+	await harness.sessionStartHandlers[0](
+		{ type: "session_start", reason: "startup" },
+		{
+			ui: {
+				setStatus: (key: string, text: string | undefined) => statuses.push({ key, text }),
+			},
+		},
+	);
+
+	assert.deepEqual(statuses, [{ key: "pi-fenced", text: "launcher:fenced" }]);
+});
+
+test("buildGlobalRequestEnvelope builds replace-only global request with base hash", () => {
+	const existingContent = '{"network":{"allow":["localhost"]}}\n';
+	const envelope = buildGlobalRequestEnvelope({
+		requestId: "request-123",
+		targetPath: "/tmp/pi/agent/fence/global.json",
+		proposalPath: "/tmp/pi-fenced/proposals/request-123.json",
+		existingContent,
+		summary: "Allow localhost",
+		createdAt: "2026-04-22T00:00:00.000Z",
+	});
+
+	const expectedBaseSha = createHash("sha256").update(existingContent, "utf8").digest("hex");
+	assert.equal(envelope.version, 1);
+	assert.equal(envelope.scope, "global");
+	assert.equal(envelope.mutationType, "replace");
+	assert.equal(envelope.requestedBy, "pi-fenced-extension");
+	assert.equal(envelope.baseSha256, expectedBaseSha);
+});
+
+test("composeShowFenceConfigOutput keeps stderr and stdout verbatim order", () => {
+	const output = composeShowFenceConfigOutput("stderr-line\n", "{\"a\":1}\n");
+	assert.equal(output, "stderr-line\n{\"a\":1}\n");
+});
+
+test("show-fence-config command executes fence and shows combined output", async () => {
+	const harness = createFakeApiHarness({
+		execResult: {
+			stderr: "chain: @base -> code\n",
+			stdout: '{"network":{"allow":["localhost"]}}\n',
+			code: 0,
+			killed: false,
+		},
+	});
+
+	registerPiFencedExtension(harness.api, {
+		PI_FENCED_LAUNCHER: "1",
+		PI_CODING_AGENT_DIR: "/tmp/pi/agent-under-test",
+	});
+
+	const command = harness.commands.get("show-fence-config");
+	assert.ok(command, "show-fence-config command should be registered");
+
+	const editorCalls: Array<{ title: string; prefill: string }> = [];
+	const notifications: Array<{ message: string; type: string | undefined }> = [];
+
+	await command!.handler("", {
+		cwd: "/workspace/project",
+		signal: undefined,
+		ui: {
+			editor: async (title: string, prefill?: string) => {
+				editorCalls.push({ title, prefill: prefill ?? "" });
+				return undefined;
+			},
+			notify: (message: string, type?: string) => notifications.push({ message, type }),
+		},
+	});
+
+	assert.deepEqual(harness.execCalls, [
+		{
+			command: "fence",
+			args: [
+				"config",
+				"show",
+				"--settings",
+				"/tmp/pi/agent-under-test/fence/global.json",
+			],
+		},
+	]);
+	assert.equal(editorCalls.length, 1);
+	assert.equal(editorCalls[0].title, "/show-fence-config");
+	assert.equal(
+		editorCalls[0].prefill,
+		"chain: @base -> code\n" + '{"network":{"allow":["localhost"]}}\n',
+	);
+	assert.equal(notifications.length, 0);
+});
