@@ -431,7 +431,7 @@ export function registerPiFencedExtension(
 	}
 
 	pi.on("session_start", (_event, ctx) => {
-		const runtimeMode = env.FENCE_SANDBOX === "1" ? "launcher:fenced" : "launcher:without-fence";
+		const runtimeMode = env.FENCE_SANDBOX === "1" ? "🔒 fence" : "yolo";
 		ctx.ui.setStatus("pi-fenced", runtimeMode);
 	});
 
@@ -443,18 +443,14 @@ export function registerPiFencedExtension(
 				return;
 			}
 
-			let requestText = args.trim();
+			const requestText = args.trim();
 			if (requestText.length === 0) {
-				requestText =
-					(await ctx.ui.input(
-						"Configure fence",
-						"Describe how the fence config should change",
-					)) ?? "";
-			}
-
-			requestText = requestText.trim();
-			if (requestText.length === 0) {
-				ctx.ui.notify("configure-fence cancelled: no change request provided", "info");
+				ctx.ui.notify(
+					"No change request provided.\n" +
+						"Usage: /configure-fence <change request>\n" +
+						"Example: /configure-fence allow api.example.com for outbound HTTPS",
+					"info",
+				);
 				return;
 			}
 

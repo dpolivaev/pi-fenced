@@ -115,7 +115,56 @@ test("registerPiFencedExtension managed mode registers commands", async () => {
 		},
 	);
 
-	assert.deepEqual(statuses, [{ key: "pi-fenced", text: "launcher:fenced" }]);
+	assert.deepEqual(statuses, [{ key: "pi-fenced", text: "🔒 fence" }]);
+});
+
+test("registerPiFencedExtension shows yolo status when fence is disabled", async () => {
+	const harness = createFakeApiHarness();
+	registerPiFencedExtension(harness.api, {
+		PI_FENCED_LAUNCHER: "1",
+	});
+
+	assert.equal(harness.sessionStartHandlers.length, 1);
+
+	const statuses: Array<{ key: string; text: string | undefined }> = [];
+	await harness.sessionStartHandlers[0](
+		{ type: "session_start", reason: "startup" },
+		{
+			ui: {
+				setStatus: (key: string, text: string | undefined) => statuses.push({ key, text }),
+			},
+		},
+	);
+
+	assert.deepEqual(statuses, [{ key: "pi-fenced", text: "yolo" }]);
+});
+
+test("configure-fence command requires inline request text", async () => {
+	const harness = createFakeApiHarness();
+	registerPiFencedExtension(harness.api, {
+		PI_FENCED_LAUNCHER: "1",
+		PI_CODING_AGENT_DIR: "/tmp/pi/agent-under-test",
+	});
+
+	const command = harness.commands.get("configure-fence");
+	assert.ok(command, "configure-fence command should be registered");
+
+	let inputCalls = 0;
+	const notifications: Array<{ message: string; type: string | undefined }> = [];
+	await command!.handler("", {
+		ui: {
+			input: async () => {
+				inputCalls += 1;
+				return "allow localhost";
+			},
+			notify: (message: string, type?: string) => notifications.push({ message, type }),
+		},
+	});
+
+	assert.equal(inputCalls, 0);
+	assert.equal(notifications.length, 1);
+	assert.equal(notifications[0].type, "info");
+	assert.match(notifications[0].message, /Usage: \/configure-fence <change request>/);
 });
 
 test("buildGlobalRequestEnvelope builds replace-only global request with base hash", () => {
