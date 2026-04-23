@@ -77,6 +77,15 @@ export function composeShowFenceConfigOutput(stderr: string, stdout: string): st
 	return `${stderr}${stdout}`;
 }
 
+export function composeInvalidConfigureFenceFeedback(invalidReason: string): string {
+	return (
+		"/configure-fence request is not actionable: " +
+			`${invalidReason}\n` +
+			"Please describe a concrete Fence policy change " +
+			"(what to allow/deny and expected effect)."
+	);
+}
+
 export function buildGlobalRequestEnvelope(input: {
 	requestId: string;
 	targetPath: string;
@@ -320,6 +329,96 @@ function warnAndShutdownForUnmanagedRuntime(ctx: ExtensionContext): void {
 	ctx.shutdown();
 }
 
+function toNormalizedLines(content: string): string[] {
+	return content.replace(/\r\n?/g, "\n").split("\n");
+}
+
+async function showReadOnlyFenceConfigOutput(
+	ctx: ExtensionContext,
+	title: string,
+	content: string,
+): Promise<void> {
+	const lines = toNormalizedLines(content.length > 0 ? content : "(no output)\n");
+
+	await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
+		let firstVisibleLine = 0;
+
+		const getViewportLineCount = (): number => Math.max(4, tui.terminal.rows - 8);
+		const getMaxFirstVisibleLine = (): number =>
+			Math.max(0, lines.length - getViewportLineCount());
+		const clampFirstVisibleLine = (): void => {
+			firstVisibleLine = Math.min(Math.max(firstVisibleLine, 0), getMaxFirstVisibleLine());
+		};
+
+		return {
+			render: (_width: number): string[] => {
+				clampFirstVisibleLine();
+				const viewportLineCount = getViewportLineCount();
+				const visibleLines = lines.slice(
+					firstVisibleLine,
+					firstVisibleLine + viewportLineCount,
+				);
+				const startLine = lines.length === 0 ? 0 : firstVisibleLine + 1;
+				const endLine =
+					lines.length === 0
+						? 0
+						: Math.min(firstVisibleLine + viewportLineCount, lines.length);
+
+				return [
+					theme.fg("accent", theme.bold(`${title} (read-only)`)),
+					theme.fg(
+						"warning",
+						"READ-ONLY: edits here are ignored. Use /configure-fence to change configuration.",
+					),
+					theme.fg("dim", `Lines ${startLine}-${endLine} of ${lines.length}`),
+					...visibleLines,
+					"",
+					theme.fg("dim", "Esc/Enter close · ↑/↓ scroll · PgUp/PgDn · Home/End"),
+				];
+			},
+			invalidate: () => {},
+			handleInput: (data: string): void => {
+				if (
+					keybindings.matches(data, "tui.select.cancel") ||
+					keybindings.matches(data, "tui.select.confirm")
+				) {
+					done(undefined);
+					return;
+				}
+
+				const maxFirstVisibleLine = getMaxFirstVisibleLine();
+				if (keybindings.matches(data, "tui.editor.cursorLineStart")) {
+					firstVisibleLine = 0;
+					tui.requestRender();
+					return;
+				}
+				if (keybindings.matches(data, "tui.editor.cursorLineEnd")) {
+					firstVisibleLine = maxFirstVisibleLine;
+					tui.requestRender();
+					return;
+				}
+
+				const pageSize = Math.max(1, getViewportLineCount() - 1);
+				let nextFirstVisibleLine = firstVisibleLine;
+				if (keybindings.matches(data, "tui.select.up")) {
+					nextFirstVisibleLine -= 1;
+				} else if (keybindings.matches(data, "tui.select.down")) {
+					nextFirstVisibleLine += 1;
+				} else if (keybindings.matches(data, "tui.select.pageUp")) {
+					nextFirstVisibleLine -= pageSize;
+				} else if (keybindings.matches(data, "tui.select.pageDown")) {
+					nextFirstVisibleLine += pageSize;
+				} else {
+					return;
+				}
+
+				firstVisibleLine = Math.min(Math.max(nextFirstVisibleLine, 0), maxFirstVisibleLine);
+				tui.requestRender();
+			},
+		};
+	});
+}
+
 export function registerPiFencedExtension(
 	pi: ExtensionAPI,
 	env: NodeJS.ProcessEnv = process.env,
@@ -385,6 +484,13 @@ export function registerPiFencedExtension(
 					},
 				);
 				const mutation = toMutationProposal(mutationArgs);
+				if (mutation.requestValidity === "invalid") {
+					ctx.ui.notify(
+						composeInvalidConfigureFenceFeedback(mutation.invalidReason),
+						"warning",
+					);
+					return;
+				}
 
 				let finalContent: string;
 				let preview: string;
@@ -477,7 +583,7 @@ export function registerPiFencedExtension(
 				);
 
 				const outputText = composeShowFenceConfigOutput(result.stderr, result.stdout);
-				await ctx.ui.editor("/show-fence-config", outputText.length > 0 ? outputText : "(no output)\n");
+				await showReadOnlyFenceConfigOutput(ctx, "/show-fence-config", outputText);
 
 				if (result.killed || result.code !== 0) {
 					ctx.ui.notify(

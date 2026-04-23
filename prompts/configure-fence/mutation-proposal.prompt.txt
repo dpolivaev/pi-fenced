@@ -4,15 +4,22 @@ Call tool %%TOOL_NAME%% exactly once with JSON arguments only.
 Do not output prose.
 
 Required output fields:
-- mutationType: "write" or "edit"
+- requestValidity: "valid" or "invalid"
 - reasoning: non-empty string
 - changeMode: non-empty string
 - effectSummary: non-empty string
 - conflictSummary: optional string (use "none" if no conflict)
+- invalidReason: required when requestValidity is "invalid"
+- mutationType: required when requestValidity is "valid"
 - writeContent: required when mutationType is "write"
 - edits: required when mutationType is "edit"
 
 Mutation semantics:
+- Invalid mode:
+  - if the request is vague, nonsense, or non-actionable, set
+    requestValidity="invalid".
+  - include concise invalidReason.
+  - do not invent or propose config changes.
 - Write mode:
   - writeContent must be the full final file content.
   - use for create/full rewrite or when edit safety is uncertain.
@@ -30,6 +37,7 @@ Fence config requirements:
 - Preserve unrelated settings unless user explicitly requests removal.
 
 Selection rules:
+- If request is not actionable, use requestValidity="invalid".
 - If target file does not exist, use mutationType="write".
 - If an edit cannot be guaranteed unique/non-overlapping, use
   mutationType="write".

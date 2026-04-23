@@ -16,6 +16,60 @@ Included components:
 The launcher runs PI, detects pending config requests, runs the external
 apply flow, and restarts PI when needed.
 
+## Installation
+
+Two supported installation paths are documented below.
+
+### Install from npm (published package)
+
+Recommended one-command global install:
+
+```bash
+pi install npm:pi-fenced@<version>
+```
+
+This global install does both:
+
+- makes `pi-fenced` available in your PATH (via npm global install)
+- registers the package in PI settings so the extension loads
+
+Project-local package registration (for `.pi/settings.json`):
+
+```bash
+pi install -l npm:pi-fenced@<version>
+```
+
+### Install from local checkout (development)
+
+From repository root:
+
+```bash
+npm install
+npm link
+pi install .
+```
+
+What each command does:
+
+- `npm link` exposes `pi-fenced` in PATH via symlink
+- `pi install .` registers the current directory as a PI package
+
+Project-local package registration from local checkout:
+
+```bash
+pi install -l .
+```
+
+### Verify installation
+
+```bash
+pi list
+pi-fenced -- --help
+```
+
+`pi-fenced-apply` is internal-only and invoked by `pi-fenced`.
+Direct invocation is rejected.
+
 ## Runtime model
 
 ### Managed runtime guard
@@ -110,7 +164,8 @@ Request contract uses replace-only apply:
 ### `/configure-fence`
 
 - always targets `<agentDir>/fence/global.json`
-- creates proposal + request under `/tmp/pi-fenced`
+- rejects vague/non-actionable requests with guidance
+- creates proposal + request under `/tmp/pi-fenced` for actionable changes
 - asks for confirmation and optional shutdown handoff
 
 ### `/show-fence-config`
@@ -122,13 +177,14 @@ fence config show --settings <agentDir>/fence/global.json
 ```
 
 Displays Fence output **verbatim** (stderr chain + stdout effective
-JSON), without sending that output through LLM context.
+JSON) in a read-only viewer (starts at first line), without sending
+that output through LLM context.
 
 ## Recovery and operations
 
 See `docs/runbook.md` for:
 
-- apply/reject flow
+- apply (Yes) / reject (No) flow
 - conflict cleanup behavior
 - stale hash / invalid proposal / rollback recovery
 - `/show-fence-config` operational usage

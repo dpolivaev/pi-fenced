@@ -6,6 +6,9 @@ Output contract:
 - Do not output prose.
 
 Mutation strategy:
+- First classify request validity: actionable -> valid, vague/nonsense -> invalid.
+- For invalid requests, return requestValidity="invalid" with invalidReason,
+  and do not invent mutations.
 - Prefer minimal safe edits when uniqueness/non-overlap is guaranteed.
 - Use full write when edit safety is uncertain.
 - Preserve unrelated settings unless explicitly requested to remove them.

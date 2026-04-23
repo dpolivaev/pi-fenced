@@ -35,6 +35,8 @@ test("buildMutationPrompt resolves placeholders and keeps request context", () =
 
 	assert.match(prompt, /Enable strict read isolation and keep command defaults/);
 	assert.match(prompt, /Target file path: \/Users\/test\/.pi\/agent\/fence\/global\.json/);
+	assert.match(prompt, /requestValidity: "valid" or "invalid"/);
+	assert.match(prompt, /If request is not actionable, use requestValidity="invalid"/);
 	assert.match(prompt, /Target file does not exist\./);
 	assert.equal(prompt.includes("%%"), false);
 });

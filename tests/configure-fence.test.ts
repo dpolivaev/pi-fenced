@@ -11,9 +11,11 @@ import {
 	createScopeDecisionTool,
 	ensureValidFenceConfigContent,
 	isTargetConfigPath,
+	normalizeRequestValidity,
 	normalizeScopeDecision,
 	toMutationProposal,
 	toScopeAnalysis,
+	type MutationProposalToolArguments,
 } from "../configure-fence.ts";
 
 function makeToolCall(name: string, args: Record<string, unknown>): ToolCall {
@@ -35,6 +37,16 @@ test("normalizeScopeDecision accepts session/workspace/global/unknown", () => {
 test("normalizeScopeDecision rejects invalid values", () => {
 	assert.equal(normalizeScopeDecision("project"), undefined);
 	assert.equal(normalizeScopeDecision(""), undefined);
+});
+
+test("normalizeRequestValidity accepts valid/invalid", () => {
+	assert.equal(normalizeRequestValidity("valid"), "valid");
+	assert.equal(normalizeRequestValidity(" INVALID "), "invalid");
+});
+
+test("normalizeRequestValidity rejects invalid values", () => {
+	assert.equal(normalizeRequestValidity("maybe"), undefined);
+	assert.equal(normalizeRequestValidity(""), undefined);
 });
 
 test("buildScopeAnalysisPrompt includes no-merge precedence", () => {
@@ -67,6 +79,7 @@ test("buildMutationProposalPrompt documents extends support", () => {
 	assert.match(prompt, /Call the provided tool exactly once/);
 	assert.match(prompt, /Resolved scope: workspace/);
 	assert.match(prompt, /Current target file content:/);
+	assert.match(prompt, /requestValidity: valid or invalid/);
 	assert.match(prompt, /Top-level extends values are allowed when needed/);
 });
 
@@ -133,6 +146,7 @@ test("mutation tool schema validates write arguments", () => {
 	const validated = validateToolArguments(
 		tool,
 		makeToolCall(tool.name, {
+			requestValidity: "valid",
 			mutationType: "write",
 			reasoning: "create file",
 			changeMode: "set-scalar",
@@ -142,6 +156,7 @@ test("mutation tool schema validates write arguments", () => {
 		}),
 	) as Record<string, unknown>;
 
+	assert.equal(validated.requestValidity, "valid");
 	assert.equal(validated.mutationType, "write");
 	assert.equal(validated.writeContent, '{"filesystem":{"allowWrite":["."]}}');
 });
@@ -151,6 +166,7 @@ test("mutation tool schema validates edit arguments", () => {
 	const validated = validateToolArguments(
 		tool,
 		makeToolCall(tool.name, {
+			requestValidity: "valid",
 			mutationType: "edit",
 			reasoning: "minimal change",
 			changeMode: "append-array-value",
@@ -159,53 +175,82 @@ test("mutation tool schema validates edit arguments", () => {
 		}),
 	) as Record<string, unknown>;
 
+	assert.equal(validated.requestValidity, "valid");
 	assert.equal(validated.mutationType, "edit");
 	assert.equal(Array.isArray(validated.edits), true);
 });
 
-test("mutation tool schema rejects missing writeContent for write mode", () => {
+test("toMutationProposal rejects write proposal without writeContent", () => {
 	const tool = createMutationProposalTool();
-	assert.throws(
-		() =>
-			validateToolArguments(
-				tool,
-				makeToolCall(tool.name, {
-					mutationType: "write",
-					reasoning: "x",
-					changeMode: "x",
-					effectSummary: "x",
-				}),
-			),
-		/Validation failed/,
-	);
+	const validated = validateToolArguments(
+		tool,
+		makeToolCall(tool.name, {
+			requestValidity: "valid",
+			mutationType: "write",
+			reasoning: "x",
+			changeMode: "x",
+			effectSummary: "x",
+		}),
+	) as MutationProposalToolArguments;
+
+	assert.throws(() => toMutationProposal(validated), /writeContent/);
 });
 
 test("toMutationProposal converts validated write proposal", () => {
 	const parsed = toMutationProposal({
+		requestValidity: "valid",
 		mutationType: "write",
 		reasoning: "rewrite",
 		changeMode: "replace-array",
 		effectSummary: "replace domains",
 		writeContent: "{}",
 	});
-	assert.equal(parsed.mutationType, "write");
-	if (parsed.mutationType === "write") {
+	assert.equal(parsed.requestValidity, "valid");
+	if (parsed.requestValidity === "valid" && parsed.mutationType === "write") {
 		assert.equal(parsed.writeContent, "{}");
 	}
 });
 
 test("toMutationProposal converts validated edit proposal", () => {
 	const parsed = toMutationProposal({
+		requestValidity: "valid",
 		mutationType: "edit",
 		reasoning: "patch",
 		changeMode: "append-array-value",
 		effectSummary: "add one entry",
 		edits: [{ oldText: "old", newText: "new" }],
 	});
-	assert.equal(parsed.mutationType, "edit");
-	if (parsed.mutationType === "edit") {
+	assert.equal(parsed.requestValidity, "valid");
+	if (parsed.requestValidity === "valid" && parsed.mutationType === "edit") {
 		assert.equal(parsed.edits.length, 1);
 	}
+});
+
+test("toMutationProposal converts invalid request classification", () => {
+	const parsed = toMutationProposal({
+		requestValidity: "invalid",
+		reasoning: "request is too vague",
+		changeMode: "none",
+		effectSummary: "none",
+		invalidReason: "Request must describe a concrete policy change.",
+	});
+	assert.equal(parsed.requestValidity, "invalid");
+	if (parsed.requestValidity === "invalid") {
+		assert.match(parsed.invalidReason, /concrete policy change/);
+	}
+});
+
+test("toMutationProposal rejects invalid classification without invalidReason", () => {
+	assert.throws(
+		() =>
+			toMutationProposal({
+				requestValidity: "invalid",
+				reasoning: "too vague",
+				changeMode: "none",
+				effectSummary: "none",
+			}),
+		/invalidReason/,
+	);
 });
 
 test("target config path matcher handles relative and absolute paths", () => {

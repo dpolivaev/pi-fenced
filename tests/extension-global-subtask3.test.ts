@@ -4,6 +4,7 @@ import test from "node:test";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	buildGlobalRequestEnvelope,
+	composeInvalidConfigureFenceFeedback,
 	composeShowFenceConfigOutput,
 	isLauncherManagedRuntime,
 	registerPiFencedExtension,
@@ -141,6 +142,13 @@ test("composeShowFenceConfigOutput keeps stderr and stdout verbatim order", () =
 	assert.equal(output, "stderr-line\n{\"a\":1}\n");
 });
 
+test("composeInvalidConfigureFenceFeedback explains non-actionable requests", () => {
+	const message = composeInvalidConfigureFenceFeedback("Request is too vague.");
+	assert.match(message, /not actionable/);
+	assert.match(message, /Request is too vague\./);
+	assert.match(message, /concrete Fence policy change/);
+});
+
 test("show-fence-config command executes fence and shows combined output", async () => {
 	const harness = createFakeApiHarness({
 		execResult: {
@@ -159,15 +167,29 @@ test("show-fence-config command executes fence and shows combined output", async
 	const command = harness.commands.get("show-fence-config");
 	assert.ok(command, "show-fence-config command should be registered");
 
-	const editorCalls: Array<{ title: string; prefill: string }> = [];
+	const customRenders: string[][] = [];
 	const notifications: Array<{ message: string; type: string | undefined }> = [];
 
 	await command!.handler("", {
 		cwd: "/workspace/project",
 		signal: undefined,
 		ui: {
-			editor: async (title: string, prefill?: string) => {
-				editorCalls.push({ title, prefill: prefill ?? "" });
+			custom: async (factory: any) => {
+				const component = await factory(
+					{
+						terminal: { rows: 18 },
+						requestRender: () => {},
+					},
+					{
+						fg: (_color: string, text: string) => text,
+						bold: (text: string) => text,
+					},
+					{
+						matches: () => false,
+					},
+					() => {},
+				);
+				customRenders.push(component.render(120));
 				return undefined;
 			},
 			notify: (message: string, type?: string) => notifications.push({ message, type }),
@@ -185,11 +207,10 @@ test("show-fence-config command executes fence and shows combined output", async
 			],
 		},
 	]);
-	assert.equal(editorCalls.length, 1);
-	assert.equal(editorCalls[0].title, "/show-fence-config");
-	assert.equal(
-		editorCalls[0].prefill,
-		"chain: @base -> code\n" + '{"network":{"allow":["localhost"]}}\n',
-	);
+	assert.equal(customRenders.length, 1);
+	assert.equal(customRenders[0][0], "/show-fence-config (read-only)");
+	assert.match(customRenders[0][1], /READ-ONLY/);
+	assert.ok(customRenders[0].includes("chain: @base -> code"));
+	assert.ok(customRenders[0].includes('{"network":{"allow":["localhost"]}}'));
 	assert.equal(notifications.length, 0);
 });

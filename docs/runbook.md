@@ -88,12 +88,14 @@ launcher run and a loud warning is emitted.
 
 From PI:
 
-1. `/configure-fence` produces:
-   - proposal file: `/tmp/pi-fenced/proposals/<id>.json`
-   - request file: `/tmp/pi-fenced/control/request-<id>.json`
+1. `/configure-fence` validates request actionability.
+   - non-actionable request -> warning feedback, no files written
+   - actionable request -> produces:
+     - proposal file: `/tmp/pi-fenced/proposals/<id>.json`
+     - request file: `/tmp/pi-fenced/control/request-<id>.json`
 2. PI can shutdown for handoff
 3. launcher runs `pi-fenced-apply`
-4. applier validates and prompts apply/reject
+4. applier validates and prompts Yes/No (Yes=apply, No=reject)
 5. launcher restarts PI after outcome handling
 
 ## External apply behavior
@@ -157,7 +159,7 @@ Diff shown to operator is unified full-file replace style.
 
 ### `rejected`
 
-- Meaning: operator chose reject at apply prompt.
+- Meaning: operator chose No (reject) at apply prompt.
 - System behavior:
   - target unchanged
   - request/proposal cleaned
@@ -196,7 +198,8 @@ Use inside managed PI runtime:
 Behavior:
 
 - executes `fence config show --settings <agentDir>/fence/global.json`
-- shows stderr and stdout output verbatim
+- shows stderr and stdout output verbatim in a read-only viewer
+  (initial view starts at the first line)
 - intended for transparency/debug, outside LLM context
 
 ## Manual verification checklist

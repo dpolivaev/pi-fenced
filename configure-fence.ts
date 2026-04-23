@@ -4,6 +4,7 @@ import type { Tool } from "@mariozechner/pi-ai";
 export type FenceConfigScope = "session" | "workspace" | "global";
 export type LlmScopeDecision = FenceConfigScope | "unknown";
 export type ScopeSource = "llm" | "user-after-unknown";
+export type MutationRequestValidity = "valid" | "invalid";
 
 export interface ScopeAnalysisPromptInput {
 	requestText: string;
@@ -37,17 +38,27 @@ interface BaseMutationProposal {
 	conflictSummary: string;
 }
 
+export interface InvalidMutationProposal extends BaseMutationProposal {
+	requestValidity: "invalid";
+	invalidReason: string;
+}
+
 export interface WriteMutationProposal extends BaseMutationProposal {
+	requestValidity: "valid";
 	mutationType: "write";
 	writeContent: string;
 }
 
 export interface EditMutationProposal extends BaseMutationProposal {
+	requestValidity: "valid";
 	mutationType: "edit";
 	edits: Array<{ oldText: string; newText: string }>;
 }
 
-export type MutationProposal = WriteMutationProposal | EditMutationProposal;
+export type MutationProposal =
+	| InvalidMutationProposal
+	| WriteMutationProposal
+	| EditMutationProposal;
 
 export interface ScopeDecisionToolArguments {
 	scopeDecision: LlmScopeDecision | string;
@@ -58,11 +69,13 @@ export interface ScopeDecisionToolArguments {
 }
 
 export interface MutationProposalToolArguments {
-	mutationType: "write" | "edit" | string;
+	requestValidity: MutationRequestValidity | string;
+	mutationType?: "write" | "edit" | string;
 	reasoning: string;
 	changeMode: string;
 	effectSummary: string;
 	conflictSummary?: string;
+	invalidReason?: string;
 	writeContent?: string;
 	edits?: Array<{ oldText: string; newText: string }>;
 }
@@ -99,10 +112,14 @@ export function createMutationProposalTool(): Tool<any> {
 	return {
 		name: MUTATION_PROPOSAL_TOOL_NAME,
 		description:
-			"Propose exact fence config mutation as write content or edit blocks with effect/conflict summaries.",
+			"Classify request validity and either propose exact fence config mutation or return invalid reason.",
 		parameters: {
 			type: "object",
 			properties: {
+				requestValidity: {
+					type: "string",
+					enum: ["valid", "invalid"],
+				},
 				mutationType: {
 					type: "string",
 					enum: ["write", "edit"],
@@ -111,6 +128,7 @@ export function createMutationProposalTool(): Tool<any> {
 				changeMode: { type: "string", minLength: 1 },
 				effectSummary: { type: "string", minLength: 1 },
 				conflictSummary: { type: "string" },
+				invalidReason: { type: "string" },
 				writeContent: { type: "string" },
 				edits: {
 					type: "array",
@@ -126,30 +144,8 @@ export function createMutationProposalTool(): Tool<any> {
 					},
 				},
 			},
-			required: ["mutationType", "reasoning", "changeMode", "effectSummary"],
+			required: ["requestValidity", "reasoning", "changeMode", "effectSummary"],
 			additionalProperties: false,
-			allOf: [
-				{
-					if: {
-						properties: {
-							mutationType: { const: "write" },
-						},
-					},
-					then: {
-						required: ["writeContent"],
-					},
-				},
-				{
-					if: {
-						properties: {
-							mutationType: { const: "edit" },
-						},
-					},
-					then: {
-						required: ["edits"],
-					},
-				},
-			],
 		},
 	};
 }
@@ -162,6 +158,14 @@ export function normalizeScopeDecision(value: string): LlmScopeDecision | undefi
 		normalized === "global" ||
 		normalized === "unknown"
 	) {
+		return normalized;
+	}
+	return undefined;
+}
+
+export function normalizeRequestValidity(value: string): MutationRequestValidity | undefined {
+	const normalized = value.trim().toLowerCase();
+	if (normalized === "valid" || normalized === "invalid") {
 		return normalized;
 	}
 	return undefined;
@@ -182,7 +186,11 @@ export function toScopeAnalysis(args: ScopeDecisionToolArguments): ScopeAnalysis
 }
 
 export function toMutationProposal(args: MutationProposalToolArguments): MutationProposal {
-	const mutationType = String(args.mutationType ?? "").trim().toLowerCase();
+	const requestValidity = normalizeRequestValidity(String(args.requestValidity ?? ""));
+	if (!requestValidity) {
+		throw new Error("Invalid requestValidity. Expected valid or invalid.");
+	}
+
 	const common = {
 		reasoning: requireNonEmptyString(args.reasoning, "reasoning"),
 		changeMode: requireNonEmptyString(args.changeMode, "changeMode"),
@@ -190,8 +198,18 @@ export function toMutationProposal(args: MutationProposalToolArguments): Mutatio
 		conflictSummary: optionalString(args.conflictSummary) ?? "none",
 	};
 
+	if (requestValidity === "invalid") {
+		return {
+			requestValidity: "invalid",
+			invalidReason: requireNonEmptyString(args.invalidReason, "invalidReason"),
+			...common,
+		};
+	}
+
+	const mutationType = String(args.mutationType ?? "").trim().toLowerCase();
 	if (mutationType === "write") {
 		return {
+			requestValidity: "valid",
 			mutationType: "write",
 			writeContent: requireNonEmptyString(args.writeContent, "writeContent"),
 			...common,
@@ -217,13 +235,14 @@ export function toMutationProposal(args: MutationProposalToolArguments): Mutatio
 		});
 
 		return {
+			requestValidity: "valid",
 			mutationType: "edit",
 			edits,
 			...common,
 		};
 	}
 
-	throw new Error("Invalid mutationType. Expected write or edit.");
+	throw new Error("Invalid mutationType. Expected write or edit when requestValidity=valid.");
 }
 
 export function buildScopeAnalysisPrompt(input: ScopeAnalysisPromptInput): string {
@@ -278,7 +297,20 @@ export function buildMutationProposalPrompt(input: MutationProposalPromptInput):
 		"",
 		existingSection,
 		"",
+		"Required output fields:",
+		"- requestValidity: valid or invalid",
+		"- reasoning: non-empty string",
+		"- changeMode: non-empty string",
+		"- effectSummary: non-empty string",
+		"- conflictSummary: optional string (use none if no conflict)",
+		"- invalidReason: required when requestValidity is invalid",
+		"- mutationType: required when requestValidity is valid",
+		"- writeContent: required when mutationType is write",
+		"- edits: required when mutationType is edit",
+		"",
 		"Mutation semantics:",
+		"- If request is vague/nonsense/non-actionable, set requestValidity=invalid and explain invalidReason.",
+		"- For requestValidity=invalid, do not invent config changes.",
 		"- Preserve unrelated settings.",
 		"- Keep JSON valid (no comments, no trailing commas).",
 		"- Top-level extends values are allowed when needed.",

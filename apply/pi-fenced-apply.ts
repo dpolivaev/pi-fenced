@@ -45,6 +45,9 @@ export interface RunPiFencedApplyInput {
 const DEFAULT_RUNTIME_ROOT = "/tmp/pi-fenced";
 const REQUEST_FILE_PATTERN = /^request-(.+)\.json$/;
 
+export const APPLY_CALLER_ENV_KEY = "PI_FENCED_APPLY_CALLER";
+export const APPLY_CALLER_ENV_VALUE = "pi-fenced";
+
 function toErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -59,6 +62,10 @@ function buildDefaultPaths(): ApplyWorkflowPaths {
 		proposalsDir: join(DEFAULT_RUNTIME_ROOT, "proposals"),
 		backupsDir: join(DEFAULT_RUNTIME_ROOT, "backups"),
 	};
+}
+
+export function isAuthorizedApplyCaller(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env[APPLY_CALLER_ENV_KEY] === APPLY_CALLER_ENV_VALUE;
 }
 
 function listRequestPaths(controlDir: string): string[] {
@@ -167,6 +174,27 @@ function buildFullReplaceUnifiedDiff(
 	].join("\n");
 }
 
+export function parseApplyDecisionAnswer(answer: string): ApplyDecision | undefined {
+	const normalized = answer.trim().toLowerCase();
+	if (
+		normalized === "y" ||
+		normalized === "yes" ||
+		normalized === "a" ||
+		normalized === "apply"
+	) {
+		return "apply";
+	}
+	if (
+		normalized === "n" ||
+		normalized === "no" ||
+		normalized === "r" ||
+		normalized === "reject"
+	) {
+		return "reject";
+	}
+	return undefined;
+}
+
 async function defaultPromptDecision(inputValue: {
 	request: FenceConfigApplyRequest;
 	diff: string;
@@ -174,21 +202,15 @@ async function defaultPromptDecision(inputValue: {
 	const rl = createInterface({ input, output });
 	try {
 		while (true) {
-			const answer = (
-				await rl.question(
-					`Apply request ${inputValue.request.requestId} ` +
-						`to ${inputValue.request.targetPath}? [a]pply/[r]eject: `,
-				)
-			)
-				.trim()
-				.toLowerCase();
-			if (answer === "a" || answer === "apply") {
-				return "apply";
+			const answer = await rl.question(
+				`Apply request ${inputValue.request.requestId} ` +
+					`to ${inputValue.request.targetPath}? [y]es/[n]o: `,
+			);
+			const decision = parseApplyDecisionAnswer(answer);
+			if (decision) {
+				return decision;
 			}
-			if (answer === "r" || answer === "reject") {
-				return "reject";
-			}
-			output.write("Please answer apply/a or reject/r.\n");
+			output.write("Please answer yes/y or no/n.\n");
 		}
 	} finally {
 		rl.close();
@@ -362,12 +384,20 @@ export async function runPiFencedApply(inputValue: RunPiFencedApplyInput = {}): 
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+	if (!isAuthorizedApplyCaller(process.env)) {
+		output.write(
+			"pi-fenced-apply: direct invocation is disabled; " +
+				"run pi-fenced instead.\n",
+		);
+		return 1;
+	}
+
 	if (argv.length > 0) {
 		output.write(`pi-fenced-apply: unexpected arguments: ${argv.join(" ")}\n`);
 		return 1;
 	}
 
-	const outcome = await runPiFencedApply();
+	const outcome = await runPiFencedApply({ env: process.env });
 	output.write(`pi-fenced-apply: ${outcome.message}\n`);
 	return isSuccessfulOutcome(outcome.type) ? 0 : 1;
 }

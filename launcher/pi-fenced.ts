@@ -1,6 +1,10 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { runPiFencedApply } from "../apply/pi-fenced-apply.ts";
+import {
+	APPLY_CALLER_ENV_KEY,
+	APPLY_CALLER_ENV_VALUE,
+	runPiFencedApply,
+} from "../apply/pi-fenced-apply.ts";
 import type { ApplyOutcome } from "../apply/outcome.ts";
 import { ensureBootstrapConfigs } from "./bootstrap-configs.ts";
 import { parseLauncherArguments } from "./cli-options.ts";
@@ -162,7 +166,13 @@ export async function runPiFencedWithRestartLoop(input: RunPiFencedLoopInput): P
 	const baseDependencies = createBaseDependencies(input.dependencies);
 	const dependencies: RunPiFencedLoopDependencies = {
 		...baseDependencies,
-		runPiFencedApply: ({ env }) => runPiFencedApply({ env }),
+		runPiFencedApply: ({ env }) =>
+			runPiFencedApply({
+				env: {
+					...env,
+					[APPLY_CALLER_ENV_KEY]: APPLY_CALLER_ENV_VALUE,
+				},
+			}),
 		...(input.dependencies ?? {}),
 	};
 

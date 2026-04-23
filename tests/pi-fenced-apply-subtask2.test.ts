@@ -10,7 +10,14 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { runPiFencedApply } from "../apply/pi-fenced-apply.ts";
+import {
+	APPLY_CALLER_ENV_KEY,
+	APPLY_CALLER_ENV_VALUE,
+	isAuthorizedApplyCaller,
+	main,
+	parseApplyDecisionAnswer,
+	runPiFencedApply,
+} from "../apply/pi-fenced-apply.ts";
 
 interface TestPaths {
 	rootDir: string;
@@ -302,5 +309,44 @@ test("runPiFencedApply drops all pending requests and linked proposals on confli
 		assert.match(warnings[0], /Detected 2 pending requests/);
 	} finally {
 		cleanup(paths);
+	}
+});
+
+test("parseApplyDecisionAnswer supports yes/no with legacy aliases", () => {
+	assert.equal(parseApplyDecisionAnswer("yes"), "apply");
+	assert.equal(parseApplyDecisionAnswer("Y"), "apply");
+	assert.equal(parseApplyDecisionAnswer("no"), "reject");
+	assert.equal(parseApplyDecisionAnswer("N"), "reject");
+	assert.equal(parseApplyDecisionAnswer("apply"), "apply");
+	assert.equal(parseApplyDecisionAnswer("reject"), "reject");
+	assert.equal(parseApplyDecisionAnswer("maybe"), undefined);
+});
+
+test("isAuthorizedApplyCaller returns true only for launcher marker", () => {
+	assert.equal(isAuthorizedApplyCaller({}), false);
+	assert.equal(
+		isAuthorizedApplyCaller({ [APPLY_CALLER_ENV_KEY]: "manual" } as NodeJS.ProcessEnv),
+		false,
+	);
+	assert.equal(
+		isAuthorizedApplyCaller({
+			[APPLY_CALLER_ENV_KEY]: APPLY_CALLER_ENV_VALUE,
+		} as NodeJS.ProcessEnv),
+		true,
+	);
+});
+
+test("pi-fenced-apply main rejects direct invocation without launcher marker", async () => {
+	const previous = process.env[APPLY_CALLER_ENV_KEY];
+	delete process.env[APPLY_CALLER_ENV_KEY];
+	try {
+		const exitCode = await main([]);
+		assert.equal(exitCode, 1);
+	} finally {
+		if (previous === undefined) {
+			delete process.env[APPLY_CALLER_ENV_KEY];
+		} else {
+			process.env[APPLY_CALLER_ENV_KEY] = previous;
+		}
 	}
 });
