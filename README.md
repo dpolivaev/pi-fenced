@@ -22,7 +22,7 @@ apply flow, and restarts PI when needed.
 
 ## Installation
 
-Two supported installation paths are documented below.
+Three supported installation paths are documented below.
 
 ### Install from npm (published package)
 
@@ -42,6 +42,33 @@ Project-local package registration (for `.pi/settings.json`):
 ```bash
 pi install -l npm:pi-fenced@<version>
 ```
+
+### Install from GitHub
+
+Install directly from this repository:
+
+```bash
+pi install git:github.com/dpolivaev/pi-fenced
+```
+
+Project-local package registration from GitHub:
+
+```bash
+pi install -l git:github.com/dpolivaev/pi-fenced
+```
+
+Optional: pin to a tag or commit by appending `@<ref>`.
+
+Note:
+
+- GitHub install registers the package for PI, but does **not** add
+  `pi-fenced` to your shell PATH.
+- Pi clones git packages into managed directories:
+  - global install: `~/.pi/agent/git/github.com/dpolivaev/pi-fenced`
+  - project install (`-l`):
+    `<project>/.pi/git/github.com/dpolivaev/pi-fenced`
+- To expose `pi-fenced` on PATH after GitHub install, run `npm link`
+  from that installed package directory.
 
 ### Install from local checkout (development)
 
