@@ -1,5 +1,6 @@
 # Task: Fence configuration schema and prompt hardening
 - **Task Identifier:** 2026-04-23-fence-schema-prompt
+- **Status:** done
 - **Scope:**
   Improve `/configure-fence` prompting and validation so the LLM has a
   reliable, explicit model of Fence configuration structure,

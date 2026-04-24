@@ -1,5 +1,6 @@
 # Task: Global-scope pi-fenced runtime with external configuration apply
 - **Task Identifier:** 2026-04-21-fence-workflow
+- **Status:** done
 - **Scope:**
   Build `pi-fenced` as a launcher-managed runtime for PI with three
   cooperating parts for global scope only: launcher (`pi-fenced`),
@@ -126,7 +127,7 @@ Apply -> Global : backup + atomic replace + validate
     must pass.
 
 ## Subtask: Implement `pi-fenced` launcher for global scope
-- **Status:** review
+- **Status:** done
 - **Scope:**
   Add launcher CLI that starts PI in launcher-managed fenced/unfenced
   modes, forwards PI args, resolves `agentDir`, ensures global bootstrap
@@ -184,7 +185,7 @@ Apply -> Global : backup + atomic replace + validate
     - PI arg pass-through smoke test.
 
 ## Subtask: Implement global-only external apply command
-- **Status:** review
+- **Status:** done
 - **Scope:**
   Build `pi-fenced-apply` for pi global target only
   (`<agentDir>/fence/global.json`).
@@ -228,7 +229,7 @@ Apply -> Global : backup + atomic replace + validate
     - conflict cleanup demonstration.
 
 ## Subtask: Complete global-only `/configure-fence` extension flow
-- **Status:** review
+- **Status:** done
 - **Scope:**
   Remove scope-selection step for this task and always target
   `<agentDir>/fence/global.json`. Add `/show-fence-config` command for
@@ -270,7 +271,7 @@ Apply -> Global : backup + atomic replace + validate
     - `/show-fence-config` returns verbatim Fence output.
 
 ## Subtask: Wire launcher/applier restart loop (global-only)
-- **Status:** review
+- **Status:** done
 - **Scope:**
   Implement PI exit -> request handling -> restart loop for global-only
   flow.
@@ -301,7 +302,7 @@ Apply -> Global : backup + atomic replace + validate
     - end-to-end apply and reject.
 
 ## Subtask: Protect control-plane and active config artifacts behind explicit unlock option
-- **Status:** review
+- **Status:** done
 - **Scope:**
   Add runtime self-protection so launcher/applier artifacts and active
   Fence config files cannot be directly modified by agent activity
@@ -359,7 +360,7 @@ Apply -> Global : backup + atomic replace + validate
     - repeat in unlocked mode and verify intentional edits work.
 
 ## Subtask: Document global-only operations and recovery
-- **Status:** review
+- **Status:** done
 - **Scope:**
   Document launcher usage, apply flow, conflict cleanup behavior, and
   failure recovery for global-only implementation.
@@ -383,7 +384,7 @@ Apply -> Global : backup + atomic replace + validate
     - verify documented commands against local behavior.
 
 ## Subtask: Harden self-protection scope and per-run lock file isolation
-- **Status:** review
+- **Status:** done
 - **Scope:**
   Expand default self-protection from selected subdirectories to the
   full `pi-fenced` package root, and switch locked settings output to a
@@ -425,3 +426,45 @@ Apply -> Global : backup + atomic replace + validate
   - **Manual tests:**
     - run two launcher instances in parallel and verify each has a
       separate lock settings file.
+
+## Subtask: Cleanup lifecycle for per-run locked settings files
+- **Status:** done
+- **Scope:**
+  Add deterministic cleanup for per-run lock settings artifacts:
+  remove the active run file on launcher exit and prune stale lock files
+  from `/tmp/pi-fenced/runtime`.
+- **Motivation:**
+  Prevent unbounded growth of temporary lock files while preserving safe
+  behavior across parallel launcher runs.
+- **Scenario:**
+  User starts and stops `pi-fenced` repeatedly. Each run creates a
+  unique lock file; launcher removes its own file on exit and startup
+  prunes old lock files without touching active recent files.
+- **Constraints:**
+  - Must not reintroduce collisions between parallel runs.
+  - Cleanup must be best-effort and never crash launcher startup/exit.
+  - Keep unlock semantics unchanged.
+- **Briefing:**
+  Add cleanup hooks around launcher run lifecycle and a stale-file prune
+  routine in self-protection utilities.
+- **Research:**
+  - Current code writes per-run lock files but does not remove them.
+  - No startup prune currently exists.
+- **Design:**
+  - `launcher/self-protection.ts`:
+    - add stale lock file prune function by prefix and max age,
+    - parse launcher PID from generated run-id format and skip stale
+      deletion when that PID is still alive.
+  - `launcher/pi-fenced.ts`:
+    - track generated lock file path,
+    - cleanup that file in `finally` on launcher exit,
+    - keep cleanup best-effort with warning only on failure.
+  - README update: explain cleanup behavior and stale-file pruning.
+- **Test specification:**
+  - **Automated tests:**
+    - stale prune removes old prefixed files and keeps fresh files,
+    - launcher removes generated lock file at session end,
+    - existing launcher/restart tests remain green.
+  - **Manual tests:**
+    - run multiple sessions and verify runtime directory does not grow
+      unbounded over time.
