@@ -451,6 +451,7 @@ export function registerPiFencedExtension(
 						"Example: /configure-fence allow api.example.com for outbound HTTPS",
 					"info",
 				);
+				ctx.ui.setEditorText?.("/configure-fence ");
 				return;
 			}
 

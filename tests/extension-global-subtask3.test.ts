@@ -151,6 +151,7 @@ test("configure-fence command requires inline request text", async () => {
 
 	let inputCalls = 0;
 	const notifications: Array<{ message: string; type: string | undefined }> = [];
+	const editorTextValues: string[] = [];
 	await command!.handler("", {
 		ui: {
 			input: async () => {
@@ -158,6 +159,7 @@ test("configure-fence command requires inline request text", async () => {
 				return "allow localhost";
 			},
 			notify: (message: string, type?: string) => notifications.push({ message, type }),
+			setEditorText: (text: string) => editorTextValues.push(text),
 		},
 	});
 
@@ -165,6 +167,7 @@ test("configure-fence command requires inline request text", async () => {
 	assert.equal(notifications.length, 1);
 	assert.equal(notifications[0].type, "info");
 	assert.match(notifications[0].message, /Usage: \/configure-fence <change request>/);
+	assert.deepEqual(editorTextValues, ["/configure-fence "]);
 });
 
 test("buildGlobalRequestEnvelope builds replace-only global request with base hash", () => {
