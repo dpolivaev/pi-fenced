@@ -7,6 +7,10 @@ out-of-process policy apply.
 
 Current implementation is **global scope only**.
 
+Deferred scope (not implemented yet):
+
+- session/workspace chain selection and reconciliation rules
+
 Included components:
 
 - launcher: `launcher/pi-fenced.ts`
@@ -188,6 +192,15 @@ Request contract uses replace-only apply:
 - creates proposal + request under `/tmp/pi-fenced` for actionable changes
 - asks for confirmation and optional shutdown handoff
 
+Mutation planning model for `/configure-fence`:
+
+- deterministic system prompt built from versioned files in
+  `prompts/configure-fence/`
+- canonical Fence domain reference injected into that system prompt
+- dynamic request context kept in user prompt
+- strict structured tool-call output contract (`valid`/`invalid`, then
+  `write` or `edit` proposal)
+
 ### `/show-fence-config`
 
 Runs:
@@ -227,12 +240,15 @@ From PI:
 
 `pi-fenced-apply` enforces:
 
-- exactly one pending request (`request-*.json`)
-- request schema validity
-- `scope === "global"`
-- request target path is `<agentDir>/fence/global.json`
-- proposal JSON validates through Fence
-- `baseSha256` matches current target content
+- no pending request -> `no-request` outcome
+- multiple pending requests -> `conflict-cleanup` outcome (drops all
+  requests and linked proposals)
+- for a single pending request:
+  - request schema validity
+  - `scope === "global"`
+  - request target path is `<agentDir>/fence/global.json`
+  - proposal JSON validates through Fence
+  - `baseSha256` matches current target content
 
 Then it prompts **Yes/No**:
 
