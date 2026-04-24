@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import {
 	FENCE_BASE_BOOTSTRAP_CONTENT,
@@ -214,6 +216,44 @@ test("runPiFenced uses locked runtime settings in fenced mode by default", () =>
 		piArgs: ["--model", "provider/model"],
 		baseEnv: { PATH: "/bin" },
 	});
+});
+
+test("runPiFenced removes generated locked settings file on exit", () => {
+	mkdirSync("/tmp/pi", { recursive: true });
+	const runtimeRoot = mkdtempSync("/tmp/pi/pi-fenced-launcher-cleanup-");
+	const settingsPath = join(runtimeRoot, "runtime", "launcher-locked-settings.test.json");
+
+	try {
+		const exitCode = runPiFenced({
+			argv: ["--", "hello"],
+			env: { PATH: "/bin" },
+			dependencies: {
+				warn: () => {},
+				resolveFencePaths: () => ({
+					agentDir: "/Users/test/.pi/agent",
+					fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
+					globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
+				}),
+				ensureBootstrapConfigs: () => {},
+				writeLockedSettingsFile: () => {
+					mkdirSync(dirname(settingsPath), { recursive: true });
+					writeFileSync(settingsPath, "{}\n", "utf-8");
+					return {
+						settingsPath,
+						protectedWritePaths: [],
+					};
+				},
+				validateFenceConfig: () => {},
+				buildLaunchSpec: (input) => ({ command: "fence", args: [input.configPath ?? ""], env: {} }),
+				runLaunchSpec: () => ({ exitCode: 0 }),
+			},
+		});
+
+		assert.equal(exitCode, 0);
+		assert.equal(existsSync(settingsPath), false);
+	} finally {
+		rmSync(runtimeRoot, { recursive: true, force: true });
+	}
 });
 
 test("runPiFenced skips locked settings when unlock flag is enabled", () => {

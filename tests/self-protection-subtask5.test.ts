@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import {
 	buildLockedSettingsContent,
 	computeProtectedWritePaths,
+	pruneStaleLockedSettingsFiles,
 	writeLockedSettingsFile,
 } from "../launcher/self-protection.ts";
 
@@ -82,4 +92,43 @@ test("writeLockedSettingsFile writes per-run launcher-locked settings file", () 
 		"/Users/test/.config/fence/fence.json",
 		"/Users/test/.config/fence",
 	]);
+});
+
+test("pruneStaleLockedSettingsFiles removes stale dead-run files only", () => {
+	mkdirSync("/tmp/pi", { recursive: true });
+	const runtimeRoot = mkdtempSync("/tmp/pi/pi-fenced-lock-cleanup-");
+	const runtimeDir = join(runtimeRoot, "runtime");
+	mkdirSync(runtimeDir, { recursive: true });
+
+	const nowMs = Date.now();
+	const staleTimestamp = new Date(nowMs - 2 * 24 * 60 * 60 * 1000);
+
+	const staleDeadFile = join(runtimeDir, "launcher-locked-settings.999999.olddead.json");
+	const staleLiveFile = join(runtimeDir, `launcher-locked-settings.${process.pid}.oldlive.json`);
+	const freshDeadFile = join(runtimeDir, "launcher-locked-settings.999999.fresh.json");
+	const unrelatedFile = join(runtimeDir, "unrelated.json");
+
+	writeFileSync(staleDeadFile, "{}\n", "utf-8");
+	writeFileSync(staleLiveFile, "{}\n", "utf-8");
+	writeFileSync(freshDeadFile, "{}\n", "utf-8");
+	writeFileSync(unrelatedFile, "{}\n", "utf-8");
+
+	utimesSync(staleDeadFile, staleTimestamp, staleTimestamp);
+	utimesSync(staleLiveFile, staleTimestamp, staleTimestamp);
+
+	try {
+		const removed = pruneStaleLockedSettingsFiles({
+			runtimeRoot,
+			nowMs,
+			maxAgeMs: 60 * 60 * 1000,
+		});
+
+		assert.deepEqual(removed, [staleDeadFile]);
+		assert.equal(existsSync(staleDeadFile), false);
+		assert.equal(existsSync(staleLiveFile), true);
+		assert.equal(existsSync(freshDeadFile), true);
+		assert.equal(existsSync(unrelatedFile), true);
+	} finally {
+		rmSync(runtimeRoot, { recursive: true, force: true });
+	}
 });

@@ -151,6 +151,13 @@ It adds `filesystem.denyWrite` protections for:
 - `<agentDir>/fence/global.json` and its parent directory
 - `~/.config/fence/fence.json` and its parent directory
 
+Lifecycle and cleanup behavior:
+
+- each launcher run creates one unique lock settings file
+- launcher removes its own generated file on exit
+- startup best-effort stale cleanup prunes old lock files, but keeps
+  files that appear to belong to currently running launcher PIDs
+
 This prevents direct in-session tampering of package control-plane code
 and active Fence config files. Normal config mutation path remains:
 `/configure-fence` -> external apply.

@@ -1,3 +1,4 @@
+import { existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -56,6 +57,7 @@ interface PreparedLaunchContext<TDependencies extends RunPiFencedDependencies> {
 	parsed: ReturnType<typeof parseLauncherArguments>;
 	paths: ResolvedFencePaths;
 	activeSettingsPath: string;
+	generatedLockedSettingsPath?: string;
 	dependencies: TDependencies;
 }
 
@@ -107,6 +109,7 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 	}
 
 	let activeSettingsPath = paths.globalConfigPath;
+	let generatedLockedSettingsPath: string | undefined;
 	if (!parsed.withoutFence && !parsed.allowSelfModify) {
 		const lockedSettings = dependencies.writeLockedSettingsFile({
 			fencePaths: {
@@ -115,6 +118,7 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 			},
 		});
 		activeSettingsPath = lockedSettings.settingsPath;
+		generatedLockedSettingsPath = lockedSettings.settingsPath;
 	}
 
 	return {
@@ -122,6 +126,7 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 		parsed,
 		paths,
 		activeSettingsPath,
+		generatedLockedSettingsPath,
 		dependencies,
 	};
 }
@@ -144,6 +149,28 @@ function launchSinglePiSession(
 	return context.dependencies.runLaunchSpec(spec).exitCode;
 }
 
+function cleanupGeneratedLockedSettingsFile(
+	context: PreparedLaunchContext<RunPiFencedDependencies>,
+): void {
+	const settingsPath = context.generatedLockedSettingsPath;
+	if (!settingsPath) {
+		return;
+	}
+
+	if (!existsSync(settingsPath)) {
+		return;
+	}
+
+	try {
+		unlinkSync(settingsPath);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		context.dependencies.warn(
+			`failed to cleanup locked runtime settings file ${settingsPath}: ${message}`,
+		);
+	}
+}
+
 function shouldRestartAfterApplyOutcome(outcome: ApplyOutcome): boolean {
 	return outcome.type !== "no-request";
 }
@@ -159,7 +186,11 @@ function logApplyOutcome(outcome: ApplyOutcome, warn: (message: string) => void)
 export function runPiFenced(input: RunPiFencedInput): number {
 	const dependencies = createBaseDependencies(input.dependencies);
 	const context = prepareLaunchContext(input, dependencies);
-	return launchSinglePiSession(context);
+	try {
+		return launchSinglePiSession(context);
+	} finally {
+		cleanupGeneratedLockedSettingsFile(context);
+	}
 }
 
 export async function runPiFencedWithRestartLoop(input: RunPiFencedLoopInput): Promise<number> {
@@ -178,22 +209,26 @@ export async function runPiFencedWithRestartLoop(input: RunPiFencedLoopInput): P
 
 	const context = prepareLaunchContext(input, dependencies);
 
-	while (true) {
-		const launchExitCode = launchSinglePiSession(context);
+	try {
+		while (true) {
+			const launchExitCode = launchSinglePiSession(context);
 
-		let applyOutcome: ApplyOutcome;
-		try {
-			applyOutcome = await dependencies.runPiFencedApply({ env: context.env });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			dependencies.warn(`apply workflow failed unexpectedly: ${message}`);
-			continue;
-		}
+			let applyOutcome: ApplyOutcome;
+			try {
+				applyOutcome = await dependencies.runPiFencedApply({ env: context.env });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				dependencies.warn(`apply workflow failed unexpectedly: ${message}`);
+				continue;
+			}
 
-		logApplyOutcome(applyOutcome, dependencies.warn);
-		if (!shouldRestartAfterApplyOutcome(applyOutcome)) {
-			return launchExitCode;
+			logApplyOutcome(applyOutcome, dependencies.warn);
+			if (!shouldRestartAfterApplyOutcome(applyOutcome)) {
+				return launchExitCode;
+			}
 		}
+	} finally {
+		cleanupGeneratedLockedSettingsFile(context);
 	}
 }
 
