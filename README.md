@@ -95,7 +95,7 @@ pi install -l .
 
 ```bash
 pi list
-pi-fenced -- --help
+pi-fenced --help
 ```
 
 `pi-fenced-apply` is internal-only and invoked by `pi-fenced`.
@@ -137,33 +137,39 @@ Bootstrap chain on launcher startup:
 
 ### Launcher modes
 
+Examples below assume `pi-fenced` is available on your PATH.
+If it is not, run `node launcher/pi-fenced.ts` with the same
+arguments.
+
 Default (fenced, self-protected):
 
 ```bash
-node launcher/pi-fenced.ts -- --model <provider/model>
+pi-fenced --model <provider/model>
 ```
 
 Fenced with monitor:
 
 ```bash
-node launcher/pi-fenced.ts --fence-monitor -- --model <provider/model>
+pi-fenced --fence-monitor --model <provider/model>
 ```
 
 Unfenced diagnostics mode (**requires explicit unlock**):
 
 ```bash
-node launcher/pi-fenced.ts --without-fence --allow-self-modify -- --model <provider/model>
+pi-fenced --without-fence --allow-self-modify --model <provider/model>
 ```
 
 Unlock mode (fenced, maintenance/development):
 
 ```bash
-node launcher/pi-fenced.ts --allow-self-modify -- --model <provider/model>
+pi-fenced --allow-self-modify --model <provider/model>
 ```
 
 Notes:
 
 - launcher always forwards remaining args to `pi`
+- `--` separator is optional; use it to force all following arguments
+  to be forwarded to `pi`
 - `--fence-monitor` is ignored in `--without-fence` mode with warning
 - `--without-fence` is refused unless `--allow-self-modify` is set
 - `--allow-self-modify` emits a loud warning and temporarily disables
