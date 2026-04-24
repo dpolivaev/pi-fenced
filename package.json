@@ -1,6 +1,9 @@
 {
   "name": "pi-fenced",
   "description": "PI coding agent extension and launcher for running PI in a Fence sandbox and configuring Fence policy out of process.",
+  "keywords": [
+    "pi-package"
+  ],
   "private": true,
   "version": "0.0.1",
   "type": "module",
@@ -19,11 +22,11 @@
     ]
   },
   "dependencies": {
-    "@mariozechner/pi-ai": "^0.67.68",
+    "@mariozechner/pi-ai": "^0.70.1",
     "tsx": "^4.21.0"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.67.1",
+    "@mariozechner/pi-coding-agent": "^0.70.1",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3"
   }
