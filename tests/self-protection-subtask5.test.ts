@@ -6,7 +6,7 @@ import {
 	writeLockedSettingsFile,
 } from "../launcher/self-protection.ts";
 
-test("computeProtectedWritePaths normalizes, includes config and control-plane paths", () => {
+test("computeProtectedWritePaths normalizes and protects full package + active configs", () => {
 	const paths = computeProtectedWritePaths({
 		projectRoot: "/workspace/pi-fenced/.",
 		fencePaths: {
@@ -16,8 +16,7 @@ test("computeProtectedWritePaths normalizes, includes config and control-plane p
 	});
 
 	assert.deepEqual(paths, [
-		"/workspace/pi-fenced/launcher",
-		"/workspace/pi-fenced/apply",
+		"/workspace/pi-fenced",
 		"/Users/test/.pi/agent/fence/global.json",
 		"/Users/test/.pi/agent/fence",
 		"/Users/test/.config/fence/fence.json",
@@ -27,8 +26,7 @@ test("computeProtectedWritePaths normalizes, includes config and control-plane p
 
 test("buildLockedSettingsContent produces valid JSON with extends and denyWrite", () => {
 	const content = buildLockedSettingsContent("/Users/test/.pi/agent/fence/global.json", [
-		"/workspace/pi-fenced/launcher",
-		"/workspace/pi-fenced/apply",
+		"/workspace/pi-fenced",
 	]);
 
 	const parsed = JSON.parse(content) as {
@@ -36,20 +34,18 @@ test("buildLockedSettingsContent produces valid JSON with extends and denyWrite"
 		filesystem: { denyWrite: string[] };
 	};
 	assert.equal(parsed.extends, "/Users/test/.pi/agent/fence/global.json");
-	assert.deepEqual(parsed.filesystem.denyWrite, [
-		"/workspace/pi-fenced/launcher",
-		"/workspace/pi-fenced/apply",
-	]);
+	assert.deepEqual(parsed.filesystem.denyWrite, ["/workspace/pi-fenced"]);
 	assert.equal(content.endsWith("\n"), true);
 });
 
-test("writeLockedSettingsFile writes launcher-locked settings file", () => {
+test("writeLockedSettingsFile writes per-run launcher-locked settings file", () => {
 	const writes: Array<{ path: string; content: string }> = [];
 	const mkdirs: string[] = [];
 
 	const result = writeLockedSettingsFile(
 		{
 			runtimeRoot: "/tmp/pi/runtime-root",
+			runId: "pid-1234",
 			projectRoot: "/workspace/pi-fenced",
 			fencePaths: {
 				globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
@@ -62,11 +58,17 @@ test("writeLockedSettingsFile writes launcher-locked settings file", () => {
 		},
 	);
 
-	assert.equal(result.settingsPath, "/tmp/pi/runtime-root/runtime/launcher-locked-settings.json");
+	assert.equal(
+		result.settingsPath,
+		"/tmp/pi/runtime-root/runtime/launcher-locked-settings.pid-1234.json",
+	);
 	assert.equal(mkdirs.length, 1);
 	assert.equal(mkdirs[0], "/tmp/pi/runtime-root/runtime");
 	assert.equal(writes.length, 1);
-	assert.equal(writes[0].path, "/tmp/pi/runtime-root/runtime/launcher-locked-settings.json");
+	assert.equal(
+		writes[0].path,
+		"/tmp/pi/runtime-root/runtime/launcher-locked-settings.pid-1234.json",
+	);
 
 	const parsed = JSON.parse(writes[0].content) as {
 		extends: string;
@@ -74,8 +76,7 @@ test("writeLockedSettingsFile writes launcher-locked settings file", () => {
 	};
 	assert.equal(parsed.extends, "/Users/test/.pi/agent/fence/global.json");
 	assert.deepEqual(parsed.filesystem.denyWrite, [
-		"/workspace/pi-fenced/launcher",
-		"/workspace/pi-fenced/apply",
+		"/workspace/pi-fenced",
 		"/Users/test/.pi/agent/fence/global.json",
 		"/Users/test/.pi/agent/fence",
 		"/Users/test/.config/fence/fence.json",

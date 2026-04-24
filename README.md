@@ -140,16 +140,19 @@ Notes:
 
 ### Default self-protection lock (when `--allow-self-modify` is not used)
 
-In fenced mode, launcher generates a locked runtime settings overlay that
-adds `filesystem.denyWrite` protections for:
+In fenced mode, launcher generates a per-run locked runtime settings
+overlay under `/tmp/pi-fenced/runtime/` with a unique filename:
 
-- `launcher/**`
-- `apply/**`
+- `/tmp/pi-fenced/runtime/launcher-locked-settings.<run-id>.json`
+
+It adds `filesystem.denyWrite` protections for:
+
+- full `pi-fenced` package root (the launcher installation path)
 - `<agentDir>/fence/global.json` and its parent directory
 - `~/.config/fence/fence.json` and its parent directory
 
-This prevents direct in-session tampering of control-plane code and
-active Fence config files. Normal config mutation path remains:
+This prevents direct in-session tampering of package control-plane code
+and active Fence config files. Normal config mutation path remains:
 `/configure-fence` -> external apply.
 
 ## Request/apply artifacts

@@ -40,6 +40,10 @@
     drop all pending requests + linked proposals, warn loudly, then
     continue.
   - Temporary control artifacts live under `/tmp/pi-fenced`.
+  - Self-protection lock must deny writes to the full package root for
+    the active launcher installation.
+  - Locked runtime settings file must be per-run unique to avoid
+    collisions across parallel launcher runs.
 - **Briefing:**
   Existing architecture notes are in `../pi-fenced/design.md`.
   Deferred multi-scope design (session/workspace selection and chain
@@ -367,14 +371,57 @@ Apply -> Global : backup + atomic replace + validate
 - **Constraints:**
   - Docs must match implemented behavior exactly.
 - **Briefing:**
-  Update README and add runbook page.
+  Keep user-facing operational documentation centralized in README.
 - **Research:**
   - Current README is scaffold-level.
 - **Design:**
-  - `README.md`: usage, CLI flags, and global bootstrap chain.
-  - `docs/runbook.md`: requests, outcomes, rollback, conflict cleanup,
-    and `/show-fence-config` usage.
+  - `README.md`: usage, CLI flags, bootstrap chain, request/apply flow,
+    outcomes, and recovery guidance.
 - **Test specification:**
   - **Automated tests:** N/A
   - **Manual tests:**
     - verify documented commands against local behavior.
+
+## Subtask: Harden self-protection scope and per-run lock file isolation
+- **Status:** review
+- **Scope:**
+  Expand default self-protection from selected subdirectories to the
+  full `pi-fenced` package root, and switch locked settings output to a
+  per-run unique filename to support parallel launcher runs.
+- **Motivation:**
+  Ensure self-modify lock semantics match user expectations and avoid
+  startup collisions when multiple launcher instances run concurrently.
+- **Scenario:**
+  User runs two `pi-fenced` sessions in parallel (for example with
+  project and global package setups). Each run gets its own locked
+  settings file and both enforce deny-write over the full package root
+  plus active config paths.
+- **Constraints:**
+  - Default mode remains deny-by-default.
+  - Unlock behavior with `--allow-self-modify` must stay unchanged.
+  - Runtime settings filename must be unique per run.
+- **Briefing:**
+  Keep the restart loop contract unchanged; only self-protection path
+  computation and locked settings filename generation should change.
+- **Research:**
+  - Current lock file path is static:
+    `/tmp/pi-fenced/runtime/launcher-locked-settings.json`.
+  - Current protected paths include `launcher/**` and `apply/**` but not
+    the whole package root.
+- **Design:**
+  - `launcher/self-protection.ts`:
+    - include normalized package root in `denyWrite`,
+    - keep active config paths and parent directories,
+    - generate per-run file name:
+      `launcher-locked-settings.<run-id>.json`.
+  - Update tests for protected path list and deterministic run-id path.
+  - Update README to describe full-package lock semantics and per-run
+    lock file naming.
+- **Test specification:**
+  - **Automated tests:**
+    - protected-path computation includes package root,
+    - locked settings writer supports deterministic per-run runId,
+    - existing launcher and extension suites remain green.
+  - **Manual tests:**
+    - run two launcher instances in parallel and verify each has a
+      separate lock settings file.

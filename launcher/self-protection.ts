@@ -4,12 +4,13 @@ import { fileURLToPath } from "node:url";
 import type { ResolvedFencePaths } from "./path-resolution.ts";
 
 const DEFAULT_RUNTIME_ROOT = "/tmp/pi-fenced";
-const LOCKED_SETTINGS_FILE_NAME = "launcher-locked-settings.json";
+const LOCKED_SETTINGS_FILE_PREFIX = "launcher-locked-settings";
 
 export interface SelfProtectionInput {
 	fencePaths: Pick<ResolvedFencePaths, "globalConfigPath" | "fenceBaseConfigPath">;
 	projectRoot?: string;
 	runtimeRoot?: string;
+	runId?: string;
 }
 
 export interface SelfProtectionResult {
@@ -52,8 +53,7 @@ export function computeProtectedWritePaths(input: SelfProtectionInput): string[]
 	const fenceBaseConfigPath = normalizeAbsolute(input.fencePaths.fenceBaseConfigPath);
 
 	return dedupePaths([
-		join(projectRoot, "launcher"),
-		join(projectRoot, "apply"),
+		projectRoot,
 		globalConfigPath,
 		dirname(globalConfigPath),
 		fenceBaseConfigPath,
@@ -75,6 +75,18 @@ export function buildLockedSettingsContent(
 	return `${JSON.stringify(content, null, 2)}\n`;
 }
 
+function normalizeRunId(runId: string): string {
+	const normalized = runId.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
+	if (normalized.length === 0) {
+		throw new Error("runId must contain at least one valid character");
+	}
+	return normalized;
+}
+
+function generateDefaultRunId(): string {
+	return `${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export function writeLockedSettingsFile(
 	input: SelfProtectionInput,
 	fileOps: SelfProtectionFileOps = {
@@ -83,7 +95,12 @@ export function writeLockedSettingsFile(
 	},
 ): SelfProtectionResult {
 	const runtimeRoot = normalizeAbsolute(input.runtimeRoot ?? DEFAULT_RUNTIME_ROOT);
-	const settingsPath = join(runtimeRoot, "runtime", LOCKED_SETTINGS_FILE_NAME);
+	const runId = normalizeRunId(input.runId ?? generateDefaultRunId());
+	const settingsPath = join(
+		runtimeRoot,
+		"runtime",
+		`${LOCKED_SETTINGS_FILE_PREFIX}.${runId}.json`,
+	);
 	const protectedWritePaths = computeProtectedWritePaths(input);
 	const content = buildLockedSettingsContent(input.fencePaths.globalConfigPath, protectedWritePaths);
 
