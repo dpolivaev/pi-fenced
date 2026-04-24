@@ -1,5 +1,6 @@
 {
   "name": "pi-fenced",
+  "description": "PI coding agent extension and launcher for running PI in a Fence sandbox and configuring Fence policy out of process.",
   "private": true,
   "version": "0.0.1",
   "type": "module",

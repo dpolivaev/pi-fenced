@@ -1,7 +1,7 @@
 # pi-fenced
 
-Launcher-managed PI runtime with Fence-first enforcement and
-out-of-process policy apply.
+PI coding agent extension and launcher for running PI in a
+Fence sandbox and configuring Fence policy out of process.
 
 ## Implemented scope (v1)
 
