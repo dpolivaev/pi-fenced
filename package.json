@@ -16,6 +16,15 @@
   "bin": {
     "pi-fenced": "./bin/pi-fenced.js"
   },
+  "files": [
+    "README.md",
+    "bin/",
+    "index.ts",
+    "configure-fence.ts",
+    "launcher/",
+    "apply/",
+    "prompts/"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"
