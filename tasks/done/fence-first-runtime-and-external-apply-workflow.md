@@ -468,3 +468,78 @@ Apply -> Global : backup + atomic replace + validate
   - **Manual tests:**
     - run multiple sessions and verify runtime directory does not grow
       unbounded over time.
+
+## Subtask: Resolve `tsx` loader from package context in `pi-fenced` bin entrypoint
+- **Status:** done
+- **Scope:**
+  Fix `pi-fenced` startup so the `tsx` runtime loader is resolved from
+  the launcher package context instead of caller current working
+  directory; add regression coverage.
+- **Motivation:**
+  `pi-fenced` must launch reliably from any directory, including
+  unrelated repositories.
+- **Scenario:**
+  User runs `pi-fenced` while their shell current directory is outside
+  the `pi-fenced` package tree. Startup still resolves `tsx`, launches
+  the TypeScript launcher, and continues normal CLI behavior.
+- **Constraints:**
+  - Keep existing runtime model (`node --import <tsx-loader> ...`).
+  - Do not require global `tsx` installation.
+  - Preserve existing CLI argument forwarding semantics.
+- **Briefing:**
+  The current `bin/pi-fenced.js` shell entrypoint spawns a child Node
+  process with `--import tsx` and then executes
+  `launcher/pi-fenced.ts`.
+- **Research:**
+  - Current implementation passes bare specifier `tsx` to `--import`.
+  - Node resolves that specifier relative to caller CWD, so invocation
+    outside package root can fail with `ERR_MODULE_NOT_FOUND`.
+
+```plantuml
+@startuml
+actor User
+participant "bin/pi-fenced.js" as Bin
+participant "Node resolver" as Resolver
+participant "launcher/pi-fenced.ts" as Launcher
+
+User -> Bin : run from external cwd
+Bin -> Resolver : --import tsx (bare specifier)
+Resolver --> Bin : not found (external cwd)
+Bin --> User : startup fails
+@enduml
+```
+
+- **Design:**
+  - In `bin/pi-fenced.js`, resolve `tsx` via
+    `createRequire(import.meta.url).resolve("tsx")`.
+  - Convert resolved absolute path to file URL for `--import`.
+  - Keep launcher path and argument forwarding unchanged.
+  - Add automated regression test that runs the bin entrypoint from an
+    external temporary directory with `--without-fence` (without unlock)
+    and asserts expected runtime-guard failure occurs without
+    `ERR_MODULE_NOT_FOUND`.
+
+```plantuml
+@startuml
+actor User
+participant "bin/pi-fenced.js" as Bin
+participant "Package-scoped require.resolve" as ResolvePkg
+participant "launcher/pi-fenced.ts" as Launcher
+
+User -> Bin : run from external cwd
+Bin -> ResolvePkg : resolve("tsx") from import.meta.url
+ResolvePkg --> Bin : absolute loader path
+Bin -> Launcher : node --import file://.../tsx loader
+Launcher --> User : normal execution
+@enduml
+```
+
+- **Test specification:**
+  - **Automated tests:**
+    - external-cwd invocation of `bin/pi-fenced.js` reaches expected
+      launcher argument validation and does not fail with
+      `ERR_MODULE_NOT_FOUND` for `tsx`.
+  - **Manual tests:**
+    - run `pi-fenced --without-fence --allow-self-modify -- --version`
+      from a non-package directory and verify no
+      `ERR_MODULE_NOT_FOUND` for `tsx`.

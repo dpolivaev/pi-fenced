@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
+const require = createRequire(import.meta.url);
+const tsxLoaderSpecifier = pathToFileURL(require.resolve("tsx")).href;
 const launcherPath = fileURLToPath(new URL("../launcher/pi-fenced.ts", import.meta.url));
 
 const child = spawn(
 	process.execPath,
-	["--import", "tsx", launcherPath, ...process.argv.slice(2)],
+	["--import", tsxLoaderSpecifier, launcherPath, ...process.argv.slice(2)],
 	{
 		stdio: "inherit",
 		env: process.env,
