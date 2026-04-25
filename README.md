@@ -20,6 +20,12 @@ Included components:
 The launcher runs PI, detects pending config requests, runs the external
 apply flow, and restarts PI when needed.
 
+## Prerequisites
+
+- Operating system: macOS or Linux
+- Fence installed and available on your PATH
+  - Fence project: https://fencesandbox.com/
+
 ## Installation
 
 Three supported installation paths are documented below.
