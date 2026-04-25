@@ -312,6 +312,32 @@ test("runPiFencedApply drops all pending requests and linked proposals on confli
 	}
 });
 
+test("runPiFencedApply prunes orphan proposals when no requests are pending", async () => {
+	const paths = createTestPaths();
+	try {
+		const orphanProposalPath = join(paths.proposalsDir, "orphan.json");
+		writeFileSync(orphanProposalPath, '{"network":{"allow":["localhost"]}}\n', "utf-8");
+
+		const warnings: string[] = [];
+		const outcome = await runPiFencedApply({
+			paths,
+			dependencies: {
+				warn: (message) => warnings.push(message),
+				print: () => {},
+				promptDecision: async () => "reject",
+				validateFenceConfig: () => {},
+			},
+		});
+
+		assert.equal(outcome.type, "no-request");
+		assert.equal(existsSync(orphanProposalPath), false);
+		assert.equal(warnings.length, 1);
+		assert.match(warnings[0], /Pruned 1 orphan proposals/);
+	} finally {
+		cleanup(paths);
+	}
+});
+
 test("parseApplyDecisionAnswer supports yes/no with legacy aliases", () => {
 	assert.equal(parseApplyDecisionAnswer("yes"), "apply");
 	assert.equal(parseApplyDecisionAnswer("Y"), "apply");

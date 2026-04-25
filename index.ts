@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import {
 	complete,
@@ -324,6 +330,64 @@ function toErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+interface RequestArtifactWriteInput {
+	proposalPath: string;
+	requestPath: string;
+	proposalContent: string;
+	requestEnvelope: FenceConfigChangeRequest;
+}
+
+interface RequestArtifactFileOps {
+	mkdirSync: (pathValue: string) => void;
+	writeFileSync: (pathValue: string, content: string) => void;
+	existsSync: (pathValue: string) => boolean;
+	unlinkSync: (pathValue: string) => void;
+}
+
+export function writeRequestArtifacts(
+	input: RequestArtifactWriteInput,
+	fileOps: RequestArtifactFileOps = {
+		mkdirSync: (pathValue) => mkdirSync(pathValue, { recursive: true }),
+		writeFileSync: (pathValue, content) => writeFileSync(pathValue, content, "utf-8"),
+		existsSync,
+		unlinkSync,
+	},
+): void {
+	fileOps.mkdirSync(dirname(input.proposalPath));
+	fileOps.writeFileSync(input.proposalPath, input.proposalContent);
+
+	try {
+		fileOps.mkdirSync(dirname(input.requestPath));
+		fileOps.writeFileSync(
+			input.requestPath,
+			`${JSON.stringify(input.requestEnvelope, null, "  ")}\n`,
+		);
+	} catch (error) {
+		const cleanupErrors: string[] = [];
+		for (const pathValue of [input.requestPath, input.proposalPath]) {
+			if (!fileOps.existsSync(pathValue)) {
+				continue;
+			}
+			try {
+				fileOps.unlinkSync(pathValue);
+			} catch (cleanupError) {
+				cleanupErrors.push(
+					`${pathValue}: ${toErrorMessage(cleanupError)}`,
+				);
+			}
+		}
+
+		const cleanupErrorSummary =
+			cleanupErrors.length > 0
+				? ` Cleanup errors: ${cleanupErrors.join("; ")}`
+				: "";
+		throw new Error(
+			`Failed to persist request/proposal artifacts: ` +
+				`${toErrorMessage(error)}.${cleanupErrorSummary}`,
+		);
+	}
+}
+
 function warnAndShutdownForUnmanagedRuntime(ctx: ExtensionContext): void {
 	ctx.ui.notify(UNMANAGED_RUNTIME_WARNING, "warning");
 	ctx.shutdown();
@@ -534,11 +598,12 @@ export function registerPiFencedExtension(
 					summary: mutation.effectSummary,
 				});
 
-				mkdirSync(dirname(proposalPath), { recursive: true });
-				writeFileSync(proposalPath, finalContent, "utf-8");
-
-				mkdirSync(dirname(requestPath), { recursive: true });
-				writeFileSync(requestPath, `${JSON.stringify(requestEnvelope, null, "  ")}\n`, "utf-8");
+				writeRequestArtifacts({
+					proposalPath,
+					requestPath,
+					proposalContent: finalContent,
+					requestEnvelope,
+				});
 
 				ctx.ui.notify(
 					`Fence config proposal queued: ${requestPath}\nProposal: ${proposalPath}`,

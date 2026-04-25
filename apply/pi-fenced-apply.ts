@@ -79,6 +79,17 @@ function listRequestPaths(controlDir: string): string[] {
 		.map((fileName) => join(controlDir, fileName));
 }
 
+function listProposalPaths(proposalsDir: string): string[] {
+	if (!existsSync(proposalsDir)) {
+		return [];
+	}
+
+	return readdirSync(proposalsDir)
+		.filter((fileName) => fileName.endsWith(".json"))
+		.sort()
+		.map((fileName) => join(proposalsDir, fileName));
+}
+
 function extractRequestIdFromPath(requestPath: string): string | undefined {
 	const fileName = basename(requestPath);
 	const match = fileName.match(REQUEST_FILE_PATTERN);
@@ -116,16 +127,24 @@ function removeFileIfExists(pathValue: string): boolean {
 	return true;
 }
 
-function cleanupRequestsAndLinkedProposals(
+function collectReferencedProposalPaths(
 	requestPaths: string[],
 	proposalsDir: string,
-): { removedRequestPaths: string[]; removedProposalPaths: string[] } {
+): Set<string> {
 	const linkedProposalPaths = new Set<string>();
 	for (const requestPath of requestPaths) {
 		for (const proposalPath of inferLinkedProposalPaths(requestPath, proposalsDir)) {
 			linkedProposalPaths.add(proposalPath);
 		}
 	}
+	return linkedProposalPaths;
+}
+
+function cleanupRequestsAndLinkedProposals(
+	requestPaths: string[],
+	proposalsDir: string,
+): { removedRequestPaths: string[]; removedProposalPaths: string[] } {
+	const linkedProposalPaths = collectReferencedProposalPaths(requestPaths, proposalsDir);
 
 	const removedRequestPaths: string[] = [];
 	for (const requestPath of requestPaths) {
@@ -145,6 +164,26 @@ function cleanupRequestsAndLinkedProposals(
 		removedRequestPaths,
 		removedProposalPaths,
 	};
+}
+
+function pruneOrphanProposalFiles(
+	requestPaths: string[],
+	proposalsDir: string,
+): string[] {
+	const referencedProposalPaths = collectReferencedProposalPaths(requestPaths, proposalsDir);
+	const proposalPaths = listProposalPaths(proposalsDir);
+	const removedPaths: string[] = [];
+
+	for (const proposalPath of proposalPaths) {
+		if (referencedProposalPaths.has(proposalPath)) {
+			continue;
+		}
+		if (removeFileIfExists(proposalPath)) {
+			removedPaths.push(proposalPath);
+		}
+	}
+
+	return removedPaths;
 }
 
 function buildFullReplaceUnifiedDiff(
@@ -236,6 +275,13 @@ export async function runPiFencedApply(inputValue: RunPiFencedApplyInput = {}): 
 	mkdirSync(paths.backupsDir, { recursive: true });
 
 	const requestPaths = listRequestPaths(paths.controlDir);
+	const orphanProposalPaths = pruneOrphanProposalFiles(requestPaths, paths.proposalsDir);
+	if (orphanProposalPaths.length > 0) {
+		dependencies.warn(
+			`Pruned ${orphanProposalPaths.length} orphan proposals from ${paths.proposalsDir}.`,
+		);
+	}
+
 	if (requestPaths.length === 0) {
 		return {
 			type: "no-request",

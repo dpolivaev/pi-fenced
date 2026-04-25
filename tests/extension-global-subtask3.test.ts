@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { dirname } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
@@ -8,6 +9,7 @@ import {
 	composeShowFenceConfigOutput,
 	isLauncherManagedRuntime,
 	registerPiFencedExtension,
+	writeRequestArtifacts,
 } from "../index.ts";
 
 interface RegisteredCommand {
@@ -187,6 +189,95 @@ test("buildGlobalRequestEnvelope builds replace-only global request with base ha
 	assert.equal(envelope.mutationType, "replace");
 	assert.equal(envelope.requestedBy, "pi-fenced-extension");
 	assert.equal(envelope.baseSha256, expectedBaseSha);
+});
+
+test("writeRequestArtifacts persists request/proposal pair", () => {
+	const proposalPath = "/tmp/pi-fenced/proposals/req-1.json";
+	const requestPath = "/tmp/pi-fenced/control/request-req-1.json";
+	const requestEnvelope = buildGlobalRequestEnvelope({
+		requestId: "req-1",
+		targetPath: "/tmp/pi/agent/fence/global.json",
+		proposalPath,
+		existingContent: "{}\n",
+		summary: "Allow localhost",
+		createdAt: "2026-04-22T00:00:00.000Z",
+	});
+
+	const fileContents = new Map<string, string>();
+	const createdDirs: string[] = [];
+	writeRequestArtifacts(
+		{
+			proposalPath,
+			requestPath,
+			proposalContent: '{"network":{"allow":["localhost"]}}\n',
+			requestEnvelope,
+		},
+		{
+			mkdirSync: (pathValue) => {
+				createdDirs.push(pathValue);
+			},
+			writeFileSync: (pathValue, content) => {
+				fileContents.set(pathValue, content);
+			},
+			existsSync: (pathValue) => fileContents.has(pathValue),
+			unlinkSync: (pathValue) => {
+				fileContents.delete(pathValue);
+			},
+		},
+	);
+
+	assert.deepEqual(createdDirs, [dirname(proposalPath), dirname(requestPath)]);
+	assert.equal(
+		fileContents.get(proposalPath),
+		'{"network":{"allow":["localhost"]}}\n',
+	);
+	assert.equal(
+		fileContents.get(requestPath),
+		`${JSON.stringify(requestEnvelope, null, "  ")}\n`,
+	);
+});
+
+test("writeRequestArtifacts cleans partial files when request write fails", () => {
+	const proposalPath = "/tmp/pi-fenced/proposals/req-2.json";
+	const requestPath = "/tmp/pi-fenced/control/request-req-2.json";
+	const requestEnvelope = buildGlobalRequestEnvelope({
+		requestId: "req-2",
+		targetPath: "/tmp/pi/agent/fence/global.json",
+		proposalPath,
+		existingContent: "{}\n",
+		summary: "Deny github.com",
+		createdAt: "2026-04-22T00:00:00.000Z",
+	});
+
+	const fileContents = new Map<string, string>();
+	assert.throws(
+		() =>
+			writeRequestArtifacts(
+				{
+					proposalPath,
+					requestPath,
+					proposalContent: '{"network":{"deny":["github.com"]}}\n',
+					requestEnvelope,
+				},
+				{
+					mkdirSync: () => {},
+					writeFileSync: (pathValue, content) => {
+						fileContents.set(pathValue, content);
+						if (pathValue === requestPath) {
+							throw new Error("disk full");
+						}
+					},
+					existsSync: (pathValue) => fileContents.has(pathValue),
+					unlinkSync: (pathValue) => {
+						fileContents.delete(pathValue);
+					},
+				},
+			),
+		/Failed to persist request\/proposal artifacts: disk full/,
+	);
+
+	assert.equal(fileContents.has(proposalPath), false);
+	assert.equal(fileContents.has(requestPath), false);
 });
 
 test("composeShowFenceConfigOutput keeps stderr and stdout verbatim order", () => {
