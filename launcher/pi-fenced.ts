@@ -2,6 +2,11 @@ import { existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+	PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV,
+	createActiveSessionStatePath,
+	readTrackedSessionPath,
+} from "./active-session-state.ts";
+import {
 	APPLY_CALLER_ENV_KEY,
 	APPLY_CALLER_ENV_VALUE,
 	runPiFencedApply,
@@ -34,6 +39,8 @@ export interface RunPiFencedDependencies {
 	}) => SelfProtectionResult;
 	buildLaunchSpec: (input: BuildLaunchSpecInput) => LaunchSpec;
 	runLaunchSpec: (spec: LaunchSpec) => { exitCode: number };
+	createActiveSessionStatePath: () => string;
+	readTrackedSessionPath: (statePath: string) => string | undefined;
 }
 
 export interface RunPiFencedInput {
@@ -58,6 +65,7 @@ interface PreparedLaunchContext<TDependencies extends RunPiFencedDependencies> {
 	paths: ResolvedFencePaths;
 	activeSettingsPath: string;
 	generatedLockedSettingsPath?: string;
+	activeSessionStatePath: string;
 	dependencies: TDependencies;
 }
 
@@ -74,6 +82,8 @@ function createBaseDependencies(
 		writeLockedSettingsFile,
 		buildLaunchSpec,
 		runLaunchSpec,
+		createActiveSessionStatePath,
+		readTrackedSessionPath,
 		...overrides,
 	};
 }
@@ -121,18 +131,22 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 		generatedLockedSettingsPath = lockedSettings.settingsPath;
 	}
 
+	const activeSessionStatePath = dependencies.createActiveSessionStatePath();
+
 	return {
 		env,
 		parsed,
 		paths,
 		activeSettingsPath,
 		generatedLockedSettingsPath,
+		activeSessionStatePath,
 		dependencies,
 	};
 }
 
 function launchSinglePiSession(
 	context: PreparedLaunchContext<RunPiFencedDependencies>,
+	piArgs: string[],
 ): number {
 	if (!context.parsed.withoutFence) {
 		context.dependencies.validateFenceConfig(context.activeSettingsPath);
@@ -142,9 +156,11 @@ function launchSinglePiSession(
 		withoutFence: context.parsed.withoutFence,
 		fenceMonitor: context.parsed.fenceMonitor,
 		configPath: context.activeSettingsPath,
-		piArgs: context.parsed.piArgs,
+		piArgs,
 		baseEnv: context.env,
 	});
+	spec.env[PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV] =
+		context.activeSessionStatePath;
 
 	return context.dependencies.runLaunchSpec(spec).exitCode;
 }
@@ -171,8 +187,75 @@ function cleanupGeneratedLockedSettingsFile(
 	}
 }
 
+function cleanupActiveSessionStateFile(
+	context: PreparedLaunchContext<RunPiFencedDependencies>,
+): void {
+	if (!existsSync(context.activeSessionStatePath)) {
+		return;
+	}
+
+	try {
+		unlinkSync(context.activeSessionStatePath);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		context.dependencies.warn(
+			`failed to cleanup active session state file ${context.activeSessionStatePath}: ${message}`,
+		);
+	}
+}
+
 function shouldRestartAfterApplyOutcome(outcome: ApplyOutcome): boolean {
 	return outcome.type !== "no-request";
+}
+
+export function hasNoSessionFlag(piArgs: string[]): boolean {
+	return piArgs.includes("--no-session");
+}
+
+export function stripSessionSelectorArgs(piArgs: string[]): string[] {
+	const stripped: string[] = [];
+	for (let index = 0; index < piArgs.length; index += 1) {
+		const arg = piArgs[index];
+		if (
+			arg === "-c" ||
+			arg === "--continue" ||
+			arg === "-r" ||
+			arg === "--resume"
+		) {
+			continue;
+		}
+
+		if (arg === "--session" || arg === "--fork") {
+			const next = piArgs[index + 1];
+			if (next !== undefined && !next.startsWith("-")) {
+				index += 1;
+			}
+			continue;
+		}
+
+		if (arg.startsWith("--session=") || arg.startsWith("--fork=")) {
+			continue;
+		}
+
+		stripped.push(arg);
+	}
+
+	return stripped;
+}
+
+export function buildRelaunchPiArgs(
+	basePiArgs: string[],
+	trackedSessionPath: string | undefined,
+): string[] {
+	if (
+		typeof trackedSessionPath !== "string" ||
+		trackedSessionPath.trim().length === 0 ||
+		hasNoSessionFlag(basePiArgs)
+	) {
+		return [...basePiArgs];
+	}
+
+	return ["--session", trackedSessionPath, ...stripSessionSelectorArgs(basePiArgs)];
 }
 
 function logApplyOutcome(outcome: ApplyOutcome, warn: (message: string) => void): void {
@@ -187,9 +270,10 @@ export function runPiFenced(input: RunPiFencedInput): number {
 	const dependencies = createBaseDependencies(input.dependencies);
 	const context = prepareLaunchContext(input, dependencies);
 	try {
-		return launchSinglePiSession(context);
+		return launchSinglePiSession(context, context.parsed.piArgs);
 	} finally {
 		cleanupGeneratedLockedSettingsFile(context);
+		cleanupActiveSessionStateFile(context);
 	}
 }
 
@@ -208,10 +292,11 @@ export async function runPiFencedWithRestartLoop(input: RunPiFencedLoopInput): P
 	};
 
 	const context = prepareLaunchContext(input, dependencies);
+	let nextLaunchPiArgs = [...context.parsed.piArgs];
 
 	try {
 		while (true) {
-			const launchExitCode = launchSinglePiSession(context);
+			const launchExitCode = launchSinglePiSession(context, nextLaunchPiArgs);
 
 			let applyOutcome: ApplyOutcome;
 			try {
@@ -226,9 +311,15 @@ export async function runPiFencedWithRestartLoop(input: RunPiFencedLoopInput): P
 			if (!shouldRestartAfterApplyOutcome(applyOutcome)) {
 				return launchExitCode;
 			}
+
+			const trackedSessionPath = dependencies.readTrackedSessionPath(
+				context.activeSessionStatePath,
+			);
+			nextLaunchPiArgs = buildRelaunchPiArgs(context.parsed.piArgs, trackedSessionPath);
 		}
 	} finally {
 		cleanupGeneratedLockedSettingsFile(context);
+		cleanupActiveSessionStateFile(context);
 	}
 }
 

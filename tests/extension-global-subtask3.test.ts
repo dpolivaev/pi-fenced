@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
@@ -11,6 +18,7 @@ import {
 	registerPiFencedExtension,
 	writeRequestArtifacts,
 } from "../index.ts";
+import { PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV } from "../launcher/active-session-state.ts";
 
 interface RegisteredCommand {
 	description?: string;
@@ -139,6 +147,64 @@ test("registerPiFencedExtension shows yolo status when fence is disabled", async
 	);
 
 	assert.deepEqual(statuses, [{ key: "pi-fenced", text: "yolo" }]);
+});
+
+test("session_start tracks active session file for launcher restarts", async () => {
+	const runtimeRoot = mkdtempSync("/tmp/pi-fenced-session-state-");
+	const statePath = join(runtimeRoot, "runtime", "active-session.test.json");
+
+	try {
+		const harness = createFakeApiHarness();
+		registerPiFencedExtension(harness.api, {
+			PI_FENCED_LAUNCHER: "1",
+			[PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV]: statePath,
+		});
+
+		assert.equal(harness.sessionStartHandlers.length, 1);
+
+		await harness.sessionStartHandlers[0](
+			{ type: "session_start", reason: "startup" },
+			{
+				sessionManager: {
+					getSessionFile: () => "/tmp/pi/sessions/current.jsonl",
+				},
+				ui: {
+					setStatus: () => {},
+					notify: () => {},
+				},
+			},
+		);
+
+		assert.equal(existsSync(statePath), true);
+		const tracked = JSON.parse(readFileSync(statePath, "utf-8"));
+		assert.equal(tracked.sessionFile, "/tmp/pi/sessions/current.jsonl");
+
+		writeFileSync(
+			statePath,
+			JSON.stringify({
+				sessionFile: "/tmp/pi/sessions/old.jsonl",
+				updatedAt: "2026-04-26T00:00:00.000Z",
+			}),
+			"utf-8",
+		);
+
+		await harness.sessionStartHandlers[0](
+			{ type: "session_start", reason: "startup" },
+			{
+				sessionManager: {
+					getSessionFile: () => undefined,
+				},
+				ui: {
+					setStatus: () => {},
+					notify: () => {},
+				},
+			},
+		);
+
+		assert.equal(existsSync(statePath), false);
+	} finally {
+		rmSync(runtimeRoot, { recursive: true, force: true });
+	}
 });
 
 test("configure-fence command requires inline request text", async () => {

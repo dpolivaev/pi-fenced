@@ -26,6 +26,10 @@ import {
 	toMutationProposal,
 	type MutationProposalToolArguments,
 } from "./configure-fence.ts";
+import {
+	PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV,
+	writeTrackedSessionPath,
+} from "./launcher/active-session-state.ts";
 import { resolveFencePaths } from "./launcher/path-resolution.ts";
 
 interface FenceConfigChangeRequest {
@@ -393,6 +397,26 @@ function warnAndShutdownForUnmanagedRuntime(ctx: ExtensionContext): void {
 	ctx.shutdown();
 }
 
+function updateActiveSessionTrackingState(
+	ctx: ExtensionContext,
+	env: NodeJS.ProcessEnv,
+): void {
+	const statePath = env[PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV];
+	if (typeof statePath !== "string" || statePath.trim().length === 0) {
+		return;
+	}
+
+	const sessionFile = ctx.sessionManager?.getSessionFile?.();
+	try {
+		writeTrackedSessionPath(statePath, sessionFile);
+	} catch (error) {
+		ctx.ui.notify(
+			`pi-fenced: failed to update active session tracking: ${toErrorMessage(error)}`,
+			"warning",
+		);
+	}
+}
+
 function toNormalizedLines(content: string): string[] {
 	return content.replace(/\r\n?/g, "\n").split("\n");
 }
@@ -495,6 +519,7 @@ export function registerPiFencedExtension(
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		updateActiveSessionTrackingState(ctx, env);
 		const runtimeMode = env.FENCE_SANDBOX === "1" ? "🔒 fence" : "yolo";
 		ctx.ui.setStatus("pi-fenced", runtimeMode);
 	});

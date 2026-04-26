@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ApplyOutcome } from "../apply/outcome.ts";
-import { runPiFencedWithRestartLoop } from "../launcher/pi-fenced.ts";
+import {
+	buildRelaunchPiArgs,
+	runPiFencedWithRestartLoop,
+	stripSessionSelectorArgs,
+} from "../launcher/pi-fenced.ts";
 
 function createGlobalPaths() {
 	return {
@@ -10,6 +14,45 @@ function createGlobalPaths() {
 		globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
 	};
 }
+
+test("stripSessionSelectorArgs removes session selector arguments only", () => {
+	assert.deepEqual(
+		stripSessionSelectorArgs([
+			"--model",
+			"provider/model",
+			"--continue",
+			"--session",
+			"/tmp/a.jsonl",
+			"--session=/tmp/b.jsonl",
+			"-r",
+			"--fork",
+			"/tmp/fork.jsonl",
+			"--fork=/tmp/fork2.jsonl",
+			"hello",
+		]),
+		["--model", "provider/model", "hello"],
+	);
+});
+
+test("buildRelaunchPiArgs injects tracked session and preserves non-session args", () => {
+	assert.deepEqual(
+		buildRelaunchPiArgs(
+			["--model", "provider/model", "--continue", "hello"],
+			"/tmp/pi/sessions/current.jsonl",
+		),
+		["--session", "/tmp/pi/sessions/current.jsonl", "--model", "provider/model", "hello"],
+	);
+});
+
+test("buildRelaunchPiArgs keeps original args when --no-session is enabled", () => {
+	assert.deepEqual(
+		buildRelaunchPiArgs(
+			["--no-session", "--model", "provider/model", "hello"],
+			"/tmp/pi/sessions/current.jsonl",
+		),
+		["--no-session", "--model", "provider/model", "hello"],
+	);
+});
 
 test("runPiFencedWithRestartLoop returns PI exit code when no request is pending", async () => {
 	const warnings: string[] = [];
@@ -131,6 +174,110 @@ test("runPiFencedWithRestartLoop restarts after applied request", async () => {
 	assert.equal(launchInputs.length, 2);
 	assert.deepEqual(launchInputs[0], launchInputs[1]);
 	assert.match(warnings.join("\n"), /apply outcome \[applied\]/);
+});
+
+test("runPiFencedWithRestartLoop resumes tracked session on restart", async () => {
+	const buildInputs: Array<{ piArgs: string[] }> = [];
+	let applyCalls = 0;
+
+	const exitCode = await runPiFencedWithRestartLoop({
+		argv: ["--", "--model", "provider/model", "--continue", "hello"],
+		env: { PATH: "/bin" },
+		dependencies: {
+			warn: () => {},
+			resolveFencePaths: () => createGlobalPaths(),
+			ensureBootstrapConfigs: () => {},
+			writeLockedSettingsFile: () => ({
+				settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
+				protectedWritePaths: [],
+			}),
+			validateFenceConfig: () => {},
+			createActiveSessionStatePath: () =>
+				"/tmp/pi-fenced/runtime/active-session.launcher-test.json",
+			readTrackedSessionPath: () => "/tmp/pi/sessions/current.jsonl",
+			buildLaunchSpec: (input) => {
+				buildInputs.push({ piArgs: input.piArgs });
+				return { command: "fence", args: [], env: {} };
+			},
+			runLaunchSpec: () => ({ exitCode: 0 }),
+			runPiFencedApply: async (): Promise<ApplyOutcome> => {
+				applyCalls += 1;
+				if (applyCalls === 1) {
+					return {
+						type: "applied",
+						requestId: "r1",
+						message: "Applied request r1.",
+					};
+				}
+				return {
+					type: "no-request",
+					message: "No pending apply requests.",
+				};
+			},
+		},
+	});
+
+	assert.equal(exitCode, 0);
+	assert.deepEqual(buildInputs, [
+		{ piArgs: ["--model", "provider/model", "--continue", "hello"] },
+		{
+			piArgs: [
+				"--session",
+				"/tmp/pi/sessions/current.jsonl",
+				"--model",
+				"provider/model",
+				"hello",
+			],
+		},
+	]);
+});
+
+test("runPiFencedWithRestartLoop keeps --no-session runs ephemeral across restart", async () => {
+	const buildInputs: Array<{ piArgs: string[] }> = [];
+	let applyCalls = 0;
+
+	const exitCode = await runPiFencedWithRestartLoop({
+		argv: ["--", "--no-session", "--model", "provider/model", "hello"],
+		env: { PATH: "/bin" },
+		dependencies: {
+			warn: () => {},
+			resolveFencePaths: () => createGlobalPaths(),
+			ensureBootstrapConfigs: () => {},
+			writeLockedSettingsFile: () => ({
+				settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
+				protectedWritePaths: [],
+			}),
+			validateFenceConfig: () => {},
+			createActiveSessionStatePath: () =>
+				"/tmp/pi-fenced/runtime/active-session.launcher-test.json",
+			readTrackedSessionPath: () => "/tmp/pi/sessions/current.jsonl",
+			buildLaunchSpec: (input) => {
+				buildInputs.push({ piArgs: input.piArgs });
+				return { command: "fence", args: [], env: {} };
+			},
+			runLaunchSpec: () => ({ exitCode: 0 }),
+			runPiFencedApply: async (): Promise<ApplyOutcome> => {
+				applyCalls += 1;
+				if (applyCalls === 1) {
+					return {
+						type: "rejected",
+						requestId: "r1",
+						message: "Request was rejected.",
+					};
+				}
+				return {
+					type: "no-request",
+					message: "No pending apply requests.",
+				};
+			},
+		},
+	});
+
+	assert.equal(exitCode, 0);
+	assert.deepEqual(buildInputs, [
+		{ piArgs: ["--no-session", "--model", "provider/model", "hello"] },
+		{ piArgs: ["--no-session", "--model", "provider/model", "hello"] },
+	]);
 });
 
 test("runPiFencedWithRestartLoop continues after malformed request outcome", async () => {
