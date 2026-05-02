@@ -141,6 +141,22 @@ Bootstrap chain on launcher startup:
 2. ensure `<agentDir>/fence/global.json` exists,
    create `{"extends":"@base"}` when missing
 
+OpenAI setup hint (required when using OpenAI models/providers and OpenAI account OAuth/subscription flows):
+
+If OpenAI authentication or token retrieval is blocked in fenced mode, add one of the following `network.allowedDomains` configurations:
+
+- Generic allowlist (one-liner JSON):
+
+```json
+{"network":{"allowedDomains":["openai.com","*.openai.com"]}}
+```
+
+- Specific allowlist (one-liner JSON, includes API host):
+
+```json
+{"network":{"allowedDomains":["api.openai.com","auth.openai.com","login.openai.com","platform.openai.com"]}}
+```
+
 ### Launcher modes
 
 Examples below assume `pi-fenced` is available on your PATH.
