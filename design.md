@@ -6,8 +6,9 @@ Implemented (v1, global scope only).
 
 Finished tasks reflected here:
 
-- `tasks/done/fence-first-runtime-and-external-apply-workflow.md`
-- `tasks/done/fence-configuration-schema-and-prompt-hardening.md`
+- `tasks/done/001-global-scope-pi-fenced-runtime-with-external-configuration-apply.md`
+- `tasks/done/002-fence-configuration-schema-and-prompt-hardening.md`
+- `tasks/done/004-persistent-macos-pasteboard-option.md`
 
 Deferred work:
 

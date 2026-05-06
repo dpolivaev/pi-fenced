@@ -12,6 +12,7 @@ import test from "node:test";
 import {
 	buildLockedSettingsContent,
 	computeProtectedWritePaths,
+	MACOS_PASTEBOARD_MACH_LOOKUPS,
 	pruneStaleLockedSettingsFiles,
 	writeLockedSettingsFile,
 } from "../launcher/self-protection.ts";
@@ -19,6 +20,7 @@ import {
 test("computeProtectedWritePaths normalizes and protects full package + active configs", () => {
 	const paths = computeProtectedWritePaths({
 		projectRoot: "/workspace/pi-fenced/.",
+		launcherPreferencesPath: "/Users/test/.pi/agent/pi-fenced/preferences.json",
 		fencePaths: {
 			globalConfigPath: "/Users/test/.pi/agent/fence/../fence/global.json",
 			fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
@@ -31,20 +33,26 @@ test("computeProtectedWritePaths normalizes and protects full package + active c
 		"/Users/test/.pi/agent/fence",
 		"/Users/test/.config/fence/fence.json",
 		"/Users/test/.config/fence",
+		"/Users/test/.pi/agent/pi-fenced/preferences.json",
+		"/Users/test/.pi/agent/pi-fenced",
 	]);
 });
 
 test("buildLockedSettingsContent produces valid JSON with extends and denyWrite", () => {
-	const content = buildLockedSettingsContent("/Users/test/.pi/agent/fence/global.json", [
-		"/workspace/pi-fenced",
-	]);
+	const content = buildLockedSettingsContent(
+		"/Users/test/.pi/agent/fence/global.json",
+		["/workspace/pi-fenced"],
+		{ enableMacosPasteboard: true },
+	);
 
 	const parsed = JSON.parse(content) as {
 		extends: string;
 		filesystem: { denyWrite: string[] };
+		macos: { mach: { lookup: readonly string[] } };
 	};
 	assert.equal(parsed.extends, "/Users/test/.pi/agent/fence/global.json");
 	assert.deepEqual(parsed.filesystem.denyWrite, ["/workspace/pi-fenced"]);
+	assert.deepEqual(parsed.macos.mach.lookup, MACOS_PASTEBOARD_MACH_LOOKUPS);
 	assert.equal(content.endsWith("\n"), true);
 });
 
@@ -57,6 +65,8 @@ test("writeLockedSettingsFile writes per-run launcher-locked settings file", () 
 			runtimeRoot: "/tmp/pi/runtime-root",
 			runId: "pid-1234",
 			projectRoot: "/workspace/pi-fenced",
+			launcherPreferencesPath: "/Users/test/.pi/agent/pi-fenced/preferences.json",
+			enableMacosPasteboard: true,
 			fencePaths: {
 				globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
 				fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
@@ -83,6 +93,7 @@ test("writeLockedSettingsFile writes per-run launcher-locked settings file", () 
 	const parsed = JSON.parse(writes[0].content) as {
 		extends: string;
 		filesystem: { denyWrite: string[] };
+		macos: { mach: { lookup: readonly string[] } };
 	};
 	assert.equal(parsed.extends, "/Users/test/.pi/agent/fence/global.json");
 	assert.deepEqual(parsed.filesystem.denyWrite, [
@@ -91,7 +102,10 @@ test("writeLockedSettingsFile writes per-run launcher-locked settings file", () 
 		"/Users/test/.pi/agent/fence",
 		"/Users/test/.config/fence/fence.json",
 		"/Users/test/.config/fence",
+		"/Users/test/.pi/agent/pi-fenced/preferences.json",
+		"/Users/test/.pi/agent/pi-fenced",
 	]);
+	assert.deepEqual(parsed.macos.mach.lookup, MACOS_PASTEBOARD_MACH_LOOKUPS);
 });
 
 test("pruneStaleLockedSettingsFiles removes stale dead-run files only", () => {

@@ -45,6 +45,29 @@ test("parseLauncherArguments ignores monitor in without-fence mode with warning"
 	assert.deepEqual(parsed.warnings, ["--fence-monitor ignored in --without-fence mode"]);
 });
 
+test("parseLauncherArguments recognizes persistent macOS pasteboard flags", () => {
+	const parsed = parseLauncherArguments([
+		"--allow-macos-pasteboard-permanently",
+		"--",
+		"--model",
+		"x/y",
+	]);
+	assert.equal(parsed.allowMacosPasteboardPermanently, true);
+	assert.equal(parsed.disallowMacosPasteboardPermanently, false);
+	assert.deepEqual(parsed.piArgs, ["--model", "x/y"]);
+});
+
+test("parseLauncherArguments rejects conflicting persistent macOS pasteboard flags", () => {
+	assert.throws(
+		() =>
+			parseLauncherArguments([
+				"--allow-macos-pasteboard-permanently",
+				"--disallow-macos-pasteboard-permanently",
+			]),
+		/cannot be used together/,
+	);
+});
+
 test("resolveAgentDir defaults to ~/.pi/agent", () => {
 	const resolved = resolveAgentDir({ env: {}, homeDir: "/Users/test" });
 	assert.equal(resolved, "/Users/test/.pi/agent");
@@ -62,6 +85,7 @@ test("resolveFencePaths returns Fence base and PI global paths", () => {
 	const paths = resolveFencePaths({ env: {}, homeDir: "/Users/test" });
 	assert.equal(paths.fenceBaseConfigPath, "/Users/test/.config/fence/fence.json");
 	assert.equal(paths.globalConfigPath, "/Users/test/.pi/agent/fence/global.json");
+	assert.equal(paths.preferencesPath, "/Users/test/.pi/agent/pi-fenced/preferences.json");
 });
 
 test("ensureBootstrapConfigs writes defaults once and then stays idempotent", () => {
@@ -83,6 +107,7 @@ test("ensureBootstrapConfigs writes defaults once and then stays idempotent", ()
 	const paths = {
 		fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
 		globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
+		preferencesPath: "/Users/test/.pi/agent/pi-fenced/preferences.json",
 	};
 
 	const first = ensureBootstrapConfigs(paths, fileOps);
@@ -105,6 +130,15 @@ test("ensureBootstrapConfigs writes defaults once and then stays idempotent", ()
 		"/Users/test/.pi/agent/fence",
 	]);
 });
+
+function createGlobalPaths() {
+	return {
+		agentDir: "/Users/test/.pi/agent",
+		fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
+		globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
+		preferencesPath: "/Users/test/.pi/agent/pi-fenced/preferences.json",
+	};
+}
 
 test("buildLaunchSpec builds fenced invocation", () => {
 	const spec = buildLaunchSpec({
@@ -173,14 +207,13 @@ test("runPiFenced uses locked runtime settings in fenced mode by default", () =>
 		env: { PATH: "/bin" },
 		dependencies: {
 			warn: (message) => warnings.push(message),
-			resolveFencePaths: () => ({
-				agentDir: "/Users/test/.pi/agent",
-				fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
-				globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
-			}),
+			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {
 				events.push("bootstrap");
 			},
+			readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
+			writeLauncherPreferences: () => {},
+			getPlatform: () => "darwin",
 			writeLockedSettingsFile: () => {
 				events.push("lock");
 				return {
@@ -229,12 +262,11 @@ test("runPiFenced removes generated locked settings file on exit", () => {
 			env: { PATH: "/bin" },
 			dependencies: {
 				warn: () => {},
-				resolveFencePaths: () => ({
-					agentDir: "/Users/test/.pi/agent",
-					fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
-					globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
-				}),
+				resolveFencePaths: () => createGlobalPaths(),
 				ensureBootstrapConfigs: () => {},
+				readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
+				writeLauncherPreferences: () => {},
+				getPlatform: () => "darwin",
 				writeLockedSettingsFile: () => {
 					mkdirSync(dirname(settingsPath), { recursive: true });
 					writeFileSync(settingsPath, "{}\n", "utf-8");
@@ -266,12 +298,11 @@ test("runPiFenced skips locked settings when unlock flag is enabled", () => {
 		env: { PATH: "/bin" },
 		dependencies: {
 			warn: (message) => warnings.push(message),
-			resolveFencePaths: () => ({
-				agentDir: "/Users/test/.pi/agent",
-				fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
-				globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
-			}),
+			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {},
+			readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
+			writeLauncherPreferences: () => {},
+			getPlatform: () => "darwin",
 			writeLockedSettingsFile: () => {
 				lockCalls += 1;
 				return {
@@ -293,6 +324,73 @@ test("runPiFenced skips locked settings when unlock flag is enabled", () => {
 	assert.match(warnings.join("\n"), /SELF-MODIFY UNLOCKED/);
 });
 
+test("runPiFenced uses runtime overlay when persistent macOS pasteboard access is enabled", () => {
+	const warnings: string[] = [];
+	const writePreferenceCalls: Array<{ pathValue: string; value: boolean }> = [];
+	const lockInputs: Array<{
+		launcherPreferencesPath?: string;
+		includeDenyWrite?: boolean;
+		enableMacosPasteboard?: boolean;
+	}> = [];
+	const validateCalls: string[] = [];
+
+	const exitCode = runPiFenced({
+		argv: ["--allow-self-modify", "--allow-macos-pasteboard-permanently", "--", "hello"],
+		env: { PATH: "/bin" },
+		dependencies: {
+			warn: (message) => warnings.push(message),
+			resolveFencePaths: () => createGlobalPaths(),
+			ensureBootstrapConfigs: () => {},
+			readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
+			writeLauncherPreferences: (pathValue, preferences) => {
+				writePreferenceCalls.push({
+					pathValue,
+					value: preferences.allowMacosPasteboard,
+				});
+			},
+			getPlatform: () => "darwin",
+			writeLockedSettingsFile: (input) => {
+				lockInputs.push({
+					launcherPreferencesPath: input.launcherPreferencesPath,
+					includeDenyWrite: input.includeDenyWrite,
+					enableMacosPasteboard: input.enableMacosPasteboard,
+				});
+				return {
+					settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
+					protectedWritePaths: [],
+				};
+			},
+			validateFenceConfig: (pathValue) => {
+				validateCalls.push(pathValue);
+			},
+			buildLaunchSpec: (input) => ({ command: "fence", args: [input.configPath ?? ""], env: {} }),
+			runLaunchSpec: () => ({ exitCode: 0 }),
+		},
+	});
+
+	assert.equal(exitCode, 0);
+	assert.deepEqual(writePreferenceCalls, [
+		{
+			pathValue: "/Users/test/.pi/agent/pi-fenced/preferences.json",
+			value: true,
+		},
+	]);
+	assert.deepEqual(lockInputs, [
+		{
+			launcherPreferencesPath: "/Users/test/.pi/agent/pi-fenced/preferences.json",
+			includeDenyWrite: false,
+			enableMacosPasteboard: true,
+		},
+	]);
+	assert.deepEqual(validateCalls, ["/tmp/pi-fenced/runtime/launcher-locked-settings.json"]);
+	assert.match(warnings.join("\n"), /SELF-MODIFY UNLOCKED/);
+	assert.match(
+		warnings.join("\n"),
+		/macOS pasteboard access permanently enabled for future fenced runs/,
+	);
+	assert.match(warnings.join("\n"), /macOS pasteboard access active for this fenced run/);
+});
+
 test("runPiFenced refuses --without-fence unless unlock flag is provided", () => {
 	assert.throws(
 		() =>
@@ -300,12 +398,11 @@ test("runPiFenced refuses --without-fence unless unlock flag is provided", () =>
 				argv: ["--without-fence", "--", "hello"],
 				env: { PATH: "/bin" },
 				dependencies: {
-					resolveFencePaths: () => ({
-						agentDir: "/Users/test/.pi/agent",
-						fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
-						globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
-					}),
+					resolveFencePaths: () => createGlobalPaths(),
 					ensureBootstrapConfigs: () => {},
+					readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
+					writeLauncherPreferences: () => {},
+					getPlatform: () => "darwin",
 					writeLockedSettingsFile: () => ({
 						settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
 						protectedWritePaths: [],
@@ -330,14 +427,13 @@ test("runPiFenced allows --without-fence when unlock flag is provided", () => {
 		env: { PATH: "/bin" },
 		dependencies: {
 			warn: (message) => warnings.push(message),
-			resolveFencePaths: () => ({
-				agentDir: "/Users/test/.pi/agent",
-				fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
-				globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
-			}),
+			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {
 				bootstrapCalls += 1;
 			},
+			readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
+			writeLauncherPreferences: () => {},
+			getPlatform: () => "darwin",
 			writeLockedSettingsFile: () => ({
 				settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
 				protectedWritePaths: [],

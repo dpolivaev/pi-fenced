@@ -20,12 +20,24 @@ export interface SelfProtectionInput {
 	projectRoot?: string;
 	runtimeRoot?: string;
 	runId?: string;
+	launcherPreferencesPath?: string;
+	includeDenyWrite?: boolean;
+	enableMacosPasteboard?: boolean;
 }
 
 export interface SelfProtectionResult {
 	settingsPath: string;
 	protectedWritePaths: string[];
 }
+
+export const MACOS_PASTEBOARD_MACH_LOOKUPS = [
+	"com.apple.pasteboard.1",
+	"com.apple.pbs.fetch_services",
+	"com.apple.coreservices.uasharedpasteboardmanager.xpc",
+	"com.apple.coreservices.uasharedpasteboardaux.xpc",
+	"com.apple.coreservices.uauseractivitypasteboardclient.xpc",
+	"com.apple.coreservices.uasharedpasteboardprogressui.xpc",
+] as const;
 
 export interface PruneLockedSettingsInput {
 	runtimeRoot?: string;
@@ -66,6 +78,9 @@ export function computeProtectedWritePaths(input: SelfProtectionInput): string[]
 	const projectRoot = normalizeAbsolute(input.projectRoot ?? getDefaultProjectRoot());
 	const globalConfigPath = normalizeAbsolute(input.fencePaths.globalConfigPath);
 	const fenceBaseConfigPath = normalizeAbsolute(input.fencePaths.fenceBaseConfigPath);
+	const launcherPreferencesPath = input.launcherPreferencesPath
+		? normalizeAbsolute(input.launcherPreferencesPath)
+		: undefined;
 
 	return dedupePaths([
 		projectRoot,
@@ -73,19 +88,46 @@ export function computeProtectedWritePaths(input: SelfProtectionInput): string[]
 		dirname(globalConfigPath),
 		fenceBaseConfigPath,
 		dirname(fenceBaseConfigPath),
+		...(launcherPreferencesPath
+			? [launcherPreferencesPath, dirname(launcherPreferencesPath)]
+			: []),
 	]);
 }
 
 export function buildLockedSettingsContent(
 	baseConfigPath: string,
 	protectedWritePaths: string[],
+	options: {
+		enableMacosPasteboard?: boolean;
+	} = {},
 ): string {
-	const content = {
+	const content: {
+		extends: string;
+		filesystem?: {
+			denyWrite: string[];
+		};
+		macos?: {
+			mach: {
+				lookup: readonly string[];
+			};
+		};
+	} = {
 		extends: normalizeAbsolute(baseConfigPath),
-		filesystem: {
-			denyWrite: protectedWritePaths,
-		},
 	};
+
+	if (protectedWritePaths.length > 0) {
+		content.filesystem = {
+			denyWrite: protectedWritePaths,
+		};
+	}
+
+	if (options.enableMacosPasteboard) {
+		content.macos = {
+			mach: {
+				lookup: MACOS_PASTEBOARD_MACH_LOOKUPS,
+			},
+		};
+	}
 
 	return `${JSON.stringify(content, null, 2)}\n`;
 }
@@ -208,8 +250,15 @@ export function writeLockedSettingsFile(
 		"runtime",
 		`${LOCKED_SETTINGS_FILE_PREFIX}.${runId}${LOCKED_SETTINGS_FILE_SUFFIX}`,
 	);
-	const protectedWritePaths = computeProtectedWritePaths(input);
-	const content = buildLockedSettingsContent(input.fencePaths.globalConfigPath, protectedWritePaths);
+	const protectedWritePaths =
+		input.includeDenyWrite === false ? [] : computeProtectedWritePaths(input);
+	const content = buildLockedSettingsContent(
+		input.fencePaths.globalConfigPath,
+		protectedWritePaths,
+		{
+			enableMacosPasteboard: input.enableMacosPasteboard,
+		},
+	);
 
 	pruneStaleLockedSettingsFiles({
 		runtimeRoot,

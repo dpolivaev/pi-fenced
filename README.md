@@ -166,25 +166,45 @@ arguments.
 Default (fenced, self-protected):
 
 ```bash
-pi-fenced --model <provider/model>
+pi-fenced
 ```
 
 Fenced with monitor:
 
 ```bash
-pi-fenced --fence-monitor --model <provider/model>
+pi-fenced --fence-monitor
 ```
 
 Unfenced diagnostics mode (**requires explicit unlock**):
 
 ```bash
-pi-fenced --without-fence --allow-self-modify --model <provider/model>
+pi-fenced --without-fence --allow-self-modify
 ```
 
 Unlock mode (fenced, maintenance/development):
 
 ```bash
-pi-fenced --allow-self-modify --model <provider/model>
+pi-fenced --allow-self-modify
+```
+
+Persistent macOS pasteboard access opt-in (applies to future fenced
+runs until explicitly disabled):
+
+```bash
+pi-fenced --allow-macos-pasteboard-permanently
+```
+
+Disable the persistent macOS pasteboard opt-in:
+
+```bash
+pi-fenced --disallow-macos-pasteboard-permanently
+```
+
+Passing normal Pi arguments through the launcher (for example, explicit
+model selection):
+
+```bash
+pi-fenced -- --model <provider/model>
 ```
 
 Notes:
@@ -196,19 +216,34 @@ Notes:
 - `--without-fence` is refused unless `--allow-self-modify` is set
 - `--allow-self-modify` emits a loud warning and temporarily disables
   default self-protection writes lock
+- `--allow-macos-pasteboard-permanently` stores a launcher-owned
+  preference under `<agentDir>/pi-fenced/preferences.json`
+- `--disallow-macos-pasteboard-permanently` clears that launcher-owned
+  preference for later fenced runs
+- macOS pasteboard access is an explicit opt-in for programmatic system
+  pasteboard reads by the fenced Pi process; it is broader than ordinary
+  terminal text paste
+- the persistent macOS pasteboard preference has no effect in
+  `--without-fence` mode
 
-### Default self-protection lock (when `--allow-self-modify` is not used)
+### Runtime settings overlay and self-protection
 
-In fenced mode, launcher generates a per-run locked runtime settings
-overlay under `/tmp/pi-fenced/runtime/` with a unique filename:
+In fenced mode, launcher may generate a per-run runtime settings overlay
+under `/tmp/pi-fenced/runtime/` with a unique filename:
 
 - `/tmp/pi-fenced/runtime/launcher-locked-settings.<run-id>.json`
 
-It adds `filesystem.denyWrite` protections for:
+When default self-protection is active (that is, `--allow-self-modify`
+is not used), the overlay adds `filesystem.denyWrite` protections for:
 
 - full `pi-fenced` package root (the launcher installation path)
 - `<agentDir>/fence/global.json` and its parent directory
 - `~/.config/fence/fence.json` and its parent directory
+- `<agentDir>/pi-fenced/preferences.json` and its parent directory
+
+When persistent macOS pasteboard access is enabled, the same runtime
+settings overlay also adds the known macOS pasteboard `mach.lookup`
+services needed for fenced clipboard-backed pasteboard access.
 
 Lifecycle and cleanup behavior:
 

@@ -12,6 +12,7 @@ function createGlobalPaths() {
 		agentDir: "/Users/test/.pi/agent",
 		fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
 		globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
+		preferencesPath: "/Users/test/.pi/agent/pi-fenced/preferences.json",
 	};
 }
 
@@ -228,6 +229,79 @@ test("runPiFencedWithRestartLoop resumes tracked session on restart", async () =
 				"provider/model",
 				"hello",
 			],
+		},
+	]);
+});
+
+test("runPiFencedWithRestartLoop uses persistent macOS pasteboard overlay across restart", async () => {
+	const buildInputs: Array<{ configPath?: string; piArgs: string[] }> = [];
+	const lockInputs: Array<{
+		launcherPreferencesPath?: string;
+		includeDenyWrite?: boolean;
+		enableMacosPasteboard?: boolean;
+	}> = [];
+	let applyCalls = 0;
+
+	const exitCode = await runPiFencedWithRestartLoop({
+		argv: ["--", "--model", "provider/model", "hello"],
+		env: { PATH: "/bin" },
+		dependencies: {
+			warn: () => {},
+			resolveFencePaths: () => createGlobalPaths(),
+			ensureBootstrapConfigs: () => {},
+			readLauncherPreferences: () => ({ allowMacosPasteboard: true }),
+			writeLauncherPreferences: () => {},
+			getPlatform: () => "darwin",
+			writeLockedSettingsFile: (input) => {
+				lockInputs.push({
+					launcherPreferencesPath: input.launcherPreferencesPath,
+					includeDenyWrite: input.includeDenyWrite,
+					enableMacosPasteboard: input.enableMacosPasteboard,
+				});
+				return {
+					settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
+					protectedWritePaths: [],
+				};
+			},
+			validateFenceConfig: () => {},
+			buildLaunchSpec: (input) => {
+				buildInputs.push({ configPath: input.configPath, piArgs: input.piArgs });
+				return { command: "fence", args: [], env: {} };
+			},
+			runLaunchSpec: () => ({ exitCode: 0 }),
+			runPiFencedApply: async (): Promise<ApplyOutcome> => {
+				applyCalls += 1;
+				if (applyCalls === 1) {
+					return {
+						type: "applied",
+						requestId: "r1",
+						message: "Applied request r1.",
+					};
+				}
+				return {
+					type: "no-request",
+					message: "No pending apply requests.",
+				};
+			},
+		},
+	});
+
+	assert.equal(exitCode, 0);
+	assert.deepEqual(lockInputs, [
+		{
+			launcherPreferencesPath: "/Users/test/.pi/agent/pi-fenced/preferences.json",
+			includeDenyWrite: true,
+			enableMacosPasteboard: true,
+		},
+	]);
+	assert.deepEqual(buildInputs, [
+		{
+			configPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
+			piArgs: ["--model", "provider/model", "hello"],
+		},
+		{
+			configPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
+			piArgs: ["--model", "provider/model", "hello"],
 		},
 	]);
 });

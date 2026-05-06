@@ -12,6 +12,7 @@ export interface ResolvedFencePaths {
 	agentDir: string;
 	fenceBaseConfigPath: string;
 	globalConfigPath: string;
+	preferencesPath: string;
 }
 
 function expandHomePath(pathValue: string, homeDir: string): string {
@@ -46,5 +47,6 @@ export function resolveFencePaths(input: ResolveFencePathsInput = {}): ResolvedF
 		agentDir,
 		fenceBaseConfigPath: join(resolvedHome, ".config", "fence", "fence.json"),
 		globalConfigPath: join(agentDir, "fence", "global.json"),
+		preferencesPath: join(agentDir, "pi-fenced", "preferences.json"),
 	};
 }

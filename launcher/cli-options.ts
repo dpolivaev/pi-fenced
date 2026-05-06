@@ -2,6 +2,8 @@ export interface ParsedLauncherArguments {
 	withoutFence: boolean;
 	fenceMonitor: boolean;
 	allowSelfModify: boolean;
+	allowMacosPasteboardPermanently: boolean;
+	disallowMacosPasteboardPermanently: boolean;
 	piArgs: string[];
 	warnings: string[];
 }
@@ -10,6 +12,8 @@ export function parseLauncherArguments(argv: string[]): ParsedLauncherArguments 
 	let withoutFence = false;
 	let fenceMonitor = false;
 	let allowSelfModify = false;
+	let allowMacosPasteboardPermanently = false;
+	let disallowMacosPasteboardPermanently = false;
 	const piArgs: string[] = [];
 	let separatorReached = false;
 
@@ -41,7 +45,27 @@ export function parseLauncherArguments(argv: string[]): ParsedLauncherArguments 
 			continue;
 		}
 
+		if (arg === "--allow-macos-pasteboard-permanently") {
+			allowMacosPasteboardPermanently = true;
+			continue;
+		}
+
+		if (arg === "--disallow-macos-pasteboard-permanently") {
+			disallowMacosPasteboardPermanently = true;
+			continue;
+		}
+
 		piArgs.push(arg);
+	}
+
+	if (
+		allowMacosPasteboardPermanently &&
+		disallowMacosPasteboardPermanently
+	) {
+		throw new Error(
+			"--allow-macos-pasteboard-permanently and " +
+				"--disallow-macos-pasteboard-permanently cannot be used together",
+		);
 	}
 
 	const warnings: string[] = [];
@@ -54,6 +78,8 @@ export function parseLauncherArguments(argv: string[]): ParsedLauncherArguments 
 		withoutFence,
 		fenceMonitor,
 		allowSelfModify,
+		allowMacosPasteboardPermanently,
+		disallowMacosPasteboardPermanently,
 		piArgs,
 		warnings,
 	};

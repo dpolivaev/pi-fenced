@@ -21,6 +21,11 @@ import {
 	type SelfProtectionResult,
 } from "./self-protection.ts";
 import {
+	readLauncherPreferences,
+	writeLauncherPreferences,
+	type LauncherPreferences,
+} from "./preferences.ts";
+import {
 	buildLaunchSpec,
 	runLaunchSpec,
 	type BuildLaunchSpecInput,
@@ -33,9 +38,18 @@ export interface RunPiFencedDependencies {
 	ensureBootstrapConfigs: (
 		paths: Pick<ResolvedFencePaths, "fenceBaseConfigPath" | "globalConfigPath">,
 	) => void;
+	readLauncherPreferences: (preferencesPath: string) => LauncherPreferences;
+	writeLauncherPreferences: (
+		preferencesPath: string,
+		preferences: LauncherPreferences,
+	) => void;
+	getPlatform: () => NodeJS.Platform;
 	validateFenceConfig: (configPath: string) => void;
 	writeLockedSettingsFile: (input: {
 		fencePaths: Pick<ResolvedFencePaths, "fenceBaseConfigPath" | "globalConfigPath">;
+		launcherPreferencesPath?: string;
+		includeDenyWrite?: boolean;
+		enableMacosPasteboard?: boolean;
 	}) => SelfProtectionResult;
 	buildLaunchSpec: (input: BuildLaunchSpecInput) => LaunchSpec;
 	runLaunchSpec: (spec: LaunchSpec) => { exitCode: number };
@@ -78,6 +92,9 @@ function createBaseDependencies(
 		warn: (message) => console.warn(`${DEFAULT_WARNING_PREFIX} ${message}`),
 		resolveFencePaths: ({ env: envValue }) => resolveFencePaths({ env: envValue }),
 		ensureBootstrapConfigs,
+		readLauncherPreferences,
+		writeLauncherPreferences,
+		getPlatform: () => process.platform,
 		validateFenceConfig,
 		writeLockedSettingsFile,
 		buildLaunchSpec,
@@ -86,6 +103,54 @@ function createBaseDependencies(
 		readTrackedSessionPath,
 		...overrides,
 	};
+}
+
+function updateLauncherPreferences(
+	parsed: ReturnType<typeof parseLauncherArguments>,
+	paths: ResolvedFencePaths,
+	dependencies: RunPiFencedDependencies,
+): LauncherPreferences {
+	let preferences = dependencies.readLauncherPreferences(paths.preferencesPath);
+
+	if (parsed.allowMacosPasteboardPermanently) {
+		preferences = {
+			...preferences,
+			allowMacosPasteboard: true,
+		};
+		dependencies.writeLauncherPreferences(paths.preferencesPath, preferences);
+		dependencies.warn(
+			"macOS pasteboard access permanently enabled for future fenced runs.",
+		);
+	}
+
+	if (parsed.disallowMacosPasteboardPermanently) {
+		preferences = {
+			...preferences,
+			allowMacosPasteboard: false,
+		};
+		dependencies.writeLauncherPreferences(paths.preferencesPath, preferences);
+		dependencies.warn(
+			"macOS pasteboard access permanently disabled for future fenced runs.",
+		);
+	}
+
+	return preferences;
+}
+
+function shouldEnableMacosPasteboardForRun(
+	parsed: ReturnType<typeof parseLauncherArguments>,
+	preferences: LauncherPreferences,
+	dependencies: RunPiFencedDependencies,
+): boolean {
+	if (parsed.withoutFence) {
+		return false;
+	}
+
+	if (dependencies.getPlatform() !== "darwin") {
+		return false;
+	}
+
+	return preferences.allowMacosPasteboard;
 }
 
 function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
@@ -103,6 +168,7 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 		fenceBaseConfigPath: paths.fenceBaseConfigPath,
 		globalConfigPath: paths.globalConfigPath,
 	});
+	const launcherPreferences = updateLauncherPreferences(parsed, paths, dependencies);
 
 	if (parsed.withoutFence && !parsed.allowSelfModify) {
 		throw new Error(
@@ -118,14 +184,26 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 		);
 	}
 
+	const enableMacosPasteboard = shouldEnableMacosPasteboardForRun(
+		parsed,
+		launcherPreferences,
+		dependencies,
+	);
+	if (enableMacosPasteboard) {
+		dependencies.warn("macOS pasteboard access active for this fenced run.");
+	}
+
 	let activeSettingsPath = paths.globalConfigPath;
 	let generatedLockedSettingsPath: string | undefined;
-	if (!parsed.withoutFence && !parsed.allowSelfModify) {
+	if (!parsed.withoutFence && (enableMacosPasteboard || !parsed.allowSelfModify)) {
 		const lockedSettings = dependencies.writeLockedSettingsFile({
 			fencePaths: {
 				fenceBaseConfigPath: paths.fenceBaseConfigPath,
 				globalConfigPath: paths.globalConfigPath,
 			},
+			launcherPreferencesPath: paths.preferencesPath,
+			includeDenyWrite: !parsed.allowSelfModify,
+			enableMacosPasteboard,
 		});
 		activeSettingsPath = lockedSettings.settingsPath;
 		generatedLockedSettingsPath = lockedSettings.settingsPath;
