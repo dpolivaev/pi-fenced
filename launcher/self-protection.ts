@@ -16,7 +16,8 @@ const LOCKED_SETTINGS_FILE_SUFFIX = ".json";
 const DEFAULT_STALE_LOCK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface SelfProtectionInput {
-	fencePaths: Pick<ResolvedFencePaths, "globalConfigPath" | "fenceBaseConfigPath">;
+	activePresetPath: string;
+	fencePaths: Pick<ResolvedFencePaths, "fenceDirectoryPath" | "fenceBaseConfigPath">;
 	projectRoot?: string;
 	runtimeRoot?: string;
 	runId?: string;
@@ -76,7 +77,7 @@ function dedupePaths(paths: string[]): string[] {
 
 export function computeProtectedWritePaths(input: SelfProtectionInput): string[] {
 	const projectRoot = normalizeAbsolute(input.projectRoot ?? getDefaultProjectRoot());
-	const globalConfigPath = normalizeAbsolute(input.fencePaths.globalConfigPath);
+	const fenceDirectoryPath = normalizeAbsolute(input.fencePaths.fenceDirectoryPath);
 	const fenceBaseConfigPath = normalizeAbsolute(input.fencePaths.fenceBaseConfigPath);
 	const launcherPreferencesPath = input.launcherPreferencesPath
 		? normalizeAbsolute(input.launcherPreferencesPath)
@@ -84,8 +85,7 @@ export function computeProtectedWritePaths(input: SelfProtectionInput): string[]
 
 	return dedupePaths([
 		projectRoot,
-		globalConfigPath,
-		dirname(globalConfigPath),
+		fenceDirectoryPath,
 		fenceBaseConfigPath,
 		dirname(fenceBaseConfigPath),
 		...(launcherPreferencesPath
@@ -253,7 +253,7 @@ export function writeLockedSettingsFile(
 	const protectedWritePaths =
 		input.includeDenyWrite === false ? [] : computeProtectedWritePaths(input);
 	const content = buildLockedSettingsContent(
-		input.fencePaths.globalConfigPath,
+		input.activePresetPath,
 		protectedWritePaths,
 		{
 			enableMacosPasteboard: input.enableMacosPasteboard,

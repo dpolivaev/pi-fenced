@@ -27,10 +27,14 @@ import {
 	type MutationProposalToolArguments,
 } from "./configure-fence.ts";
 import {
-	PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV,
-	writeTrackedSessionPath,
-} from "./launcher/active-session-state.ts";
-import { resolveFencePaths } from "./launcher/path-resolution.ts";
+	PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV,
+	readActiveLaunchPresetPath,
+	writeActiveLaunchSessionPath,
+} from "./launcher/active-launch-state.ts";
+import {
+	DEFAULT_PRESET_NAME,
+	inferPresetNameFromPath,
+} from "./launcher/global-presets.ts";
 
 interface FenceConfigChangeRequest {
 	version: 1;
@@ -80,7 +84,17 @@ export function isLauncherManagedRuntime(env: NodeJS.ProcessEnv = process.env): 
 }
 
 export function resolveGlobalConfigTargetPath(env: NodeJS.ProcessEnv = process.env): string {
-	return resolveFencePaths({ env }).globalConfigPath;
+	const statePath = env[PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV];
+	if (typeof statePath !== "string" || statePath.trim().length === 0) {
+		throw new Error("Missing pi-fenced active launch state path");
+	}
+
+	const activePresetPath = readActiveLaunchPresetPath(statePath);
+	if (typeof activePresetPath !== "string" || activePresetPath.trim().length === 0) {
+		throw new Error("Missing active global preset path for this pi-fenced launcher run");
+	}
+
+	return activePresetPath;
 }
 
 export function composeShowFenceConfigOutput(stderr: string, stdout: string): string {
@@ -179,9 +193,9 @@ export function buildMutationPrompt(input: MutationPromptInput): string {
 		TARGET_PATH: input.targetPath,
 		REQUEST_TEXT: input.requestText,
 		SCOPE_REASONING:
-			"Global-only v1 mode: /configure-fence always targets the PI global config file.",
+			"Global scope targets the active launcher-selected global preset file for this PI run.",
 		SCOPE_EFFECT_SUMMARY:
-			"Requested change applies to launcher-managed PI sessions through the global config.",
+			"Requested change applies to launches and restarts that use this selected global preset.",
 		SCOPE_CONFLICT_SUMMARY: "none",
 		EXISTING_TARGET_CONTEXT: buildExistingTargetContext(input.existingContent),
 	});
@@ -397,21 +411,43 @@ function warnAndShutdownForUnmanagedRuntime(ctx: ExtensionContext): void {
 	ctx.shutdown();
 }
 
-function updateActiveSessionTrackingState(
+function resolveRuntimeStatusLabel(env: NodeJS.ProcessEnv): string {
+	if (env.FENCE_SANDBOX !== "1") {
+		return "yolo";
+	}
+
+	const statePath = env[PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV];
+	if (typeof statePath !== "string" || statePath.trim().length === 0) {
+		return "🔒 fence";
+	}
+
+	const activePresetPath = readActiveLaunchPresetPath(statePath);
+	const presetName =
+		typeof activePresetPath === "string"
+			? inferPresetNameFromPath(activePresetPath)
+			: undefined;
+	if (!presetName || presetName === DEFAULT_PRESET_NAME) {
+		return "🔒 fence";
+	}
+
+	return `🔒 fence ${presetName}`;
+}
+
+function updateActiveLaunchState(
 	ctx: ExtensionContext,
 	env: NodeJS.ProcessEnv,
 ): void {
-	const statePath = env[PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV];
+	const statePath = env[PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV];
 	if (typeof statePath !== "string" || statePath.trim().length === 0) {
 		return;
 	}
 
 	const sessionFile = ctx.sessionManager?.getSessionFile?.();
 	try {
-		writeTrackedSessionPath(statePath, sessionFile);
+		writeActiveLaunchSessionPath(statePath, sessionFile);
 	} catch (error) {
 		ctx.ui.notify(
-			`pi-fenced: failed to update active session tracking: ${toErrorMessage(error)}`,
+			`pi-fenced: failed to update active launch state: ${toErrorMessage(error)}`,
 			"warning",
 		);
 	}
@@ -519,9 +555,8 @@ export function registerPiFencedExtension(
 	}
 
 	pi.on("session_start", (_event, ctx) => {
-		updateActiveSessionTrackingState(ctx, env);
-		const runtimeMode = env.FENCE_SANDBOX === "1" ? "🔒 fence" : "yolo";
-		ctx.ui.setStatus("pi-fenced", runtimeMode);
+		updateActiveLaunchState(ctx, env);
+		ctx.ui.setStatus("pi-fenced", resolveRuntimeStatusLabel(env));
 	});
 
 	pi.registerCommand("configure-fence", {
@@ -598,7 +633,7 @@ export function registerPiFencedExtension(
 				const allowChange = await ctx.ui.confirm(
 					"Queue external fence configuration change?",
 					`${preview}\n\n` +
-						`Resolved scope: global (fixed in v1)\n` +
+						`Resolved scope: global (active launcher preset)\n` +
 						`Target path: ${targetPath}\n` +
 						`Mutation type: ${mutation.mutationType}\n` +
 						`Mutation intent: ${mutation.changeMode}\n` +
@@ -654,7 +689,7 @@ export function registerPiFencedExtension(
 
 	pi.registerCommand("show-fence-config", {
 		description:
-			"Show effective Fence config for the PI global target using fence config show",
+			"Show effective Fence config for the active launcher-selected global preset using fence config show",
 		handler: async (_args, ctx) => {
 			if (!isLauncherManagedRuntime(env)) {
 				warnAndShutdownForUnmanagedRuntime(ctx);

@@ -11,8 +11,18 @@ function createGlobalPaths() {
 	return {
 		agentDir: "/Users/test/.pi/agent",
 		fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
-		globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
+		fenceDirectoryPath: "/Users/test/.pi/agent/fence",
+		presetsDirectoryPath: "/Users/test/.pi/agent/fence/presets",
+		defaultPresetPath: "/Users/test/.pi/agent/fence/presets/default-configuration.json",
+		selectionPath: "/Users/test/.pi/agent/fence/selection.json",
 		preferencesPath: "/Users/test/.pi/agent/pi-fenced/preferences.json",
+	};
+}
+
+function createResolvedPreset() {
+	return {
+		presetName: "default-configuration",
+		presetPath: "/Users/test/.pi/agent/fence/presets/default-configuration.json",
 	};
 }
 
@@ -73,6 +83,7 @@ test("runPiFencedWithRestartLoop returns PI exit code when no request is pending
 			ensureBootstrapConfigs: () => {
 				bootstrapCalls += 1;
 			},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			writeLockedSettingsFile: () => {
 				lockCalls += 1;
 				return {
@@ -143,6 +154,7 @@ test("runPiFencedWithRestartLoop restarts after applied request", async () => {
 			warn: (message) => warnings.push(message),
 			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			writeLockedSettingsFile: () => ({
 				settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
 				protectedWritePaths: [],
@@ -177,6 +189,65 @@ test("runPiFencedWithRestartLoop restarts after applied request", async () => {
 	assert.match(warnings.join("\n"), /apply outcome \[applied\]/);
 });
 
+test("runPiFencedWithRestartLoop keeps original preset across automatic restart", async () => {
+	const buildInputs: Array<{ configPath?: string }> = [];
+	let applyCalls = 0;
+	let selectedPresetPath = "/Users/test/.pi/agent/fence/presets/strict.json";
+	let resolveCalls = 0;
+
+	const exitCode = await runPiFencedWithRestartLoop({
+		argv: ["--without-fence", "--allow-self-modify", "--", "hello"],
+		env: { PATH: "/bin" },
+		dependencies: {
+			warn: () => {},
+			resolveFencePaths: () => createGlobalPaths(),
+			ensureBootstrapConfigs: () => {},
+			resolveSelectedGlobalPreset: () => {
+				resolveCalls += 1;
+				return {
+					presetName: selectedPresetPath.includes("strict") ? "strict" : "travel",
+					presetPath: selectedPresetPath,
+				};
+			},
+			readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
+			writeLauncherPreferences: () => {},
+			getPlatform: () => "darwin",
+			writeLockedSettingsFile: () => ({
+				settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
+				protectedWritePaths: [],
+			}),
+			validateFenceConfig: () => {},
+			buildLaunchSpec: (input) => {
+				buildInputs.push({ configPath: input.configPath });
+				return { command: "pi", args: input.piArgs, env: {} };
+			},
+			runLaunchSpec: () => ({ exitCode: 0 }),
+			runPiFencedApply: async (): Promise<ApplyOutcome> => {
+				applyCalls += 1;
+				if (applyCalls === 1) {
+					selectedPresetPath = "/Users/test/.pi/agent/fence/presets/travel.json";
+					return {
+						type: "applied",
+						requestId: "r1",
+						message: "Applied request r1.",
+					};
+				}
+				return {
+					type: "no-request",
+					message: "No pending apply requests.",
+				};
+			},
+		},
+	});
+
+	assert.equal(exitCode, 0);
+	assert.equal(resolveCalls, 1);
+	assert.deepEqual(buildInputs, [
+		{ configPath: "/Users/test/.pi/agent/fence/presets/strict.json" },
+		{ configPath: "/Users/test/.pi/agent/fence/presets/strict.json" },
+	]);
+});
+
 test("runPiFencedWithRestartLoop resumes tracked session on restart", async () => {
 	const buildInputs: Array<{ piArgs: string[] }> = [];
 	let applyCalls = 0;
@@ -188,14 +259,15 @@ test("runPiFencedWithRestartLoop resumes tracked session on restart", async () =
 			warn: () => {},
 			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			writeLockedSettingsFile: () => ({
 				settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
 				protectedWritePaths: [],
 			}),
 			validateFenceConfig: () => {},
-			createActiveSessionStatePath: () =>
-				"/tmp/pi-fenced/runtime/active-session.launcher-test.json",
-			readTrackedSessionPath: () => "/tmp/pi/sessions/current.jsonl",
+			createActiveLaunchStatePath: () =>
+				"/tmp/pi-fenced/runtime/active-launch.launcher-test.json",
+			readActiveLaunchSessionPath: () => "/tmp/pi/sessions/current.jsonl",
 			buildLaunchSpec: (input) => {
 				buildInputs.push({ piArgs: input.piArgs });
 				return { command: "fence", args: [], env: {} };
@@ -249,6 +321,7 @@ test("runPiFencedWithRestartLoop uses persistent macOS pasteboard overlay across
 			warn: () => {},
 			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			readLauncherPreferences: () => ({ allowMacosPasteboard: true }),
 			writeLauncherPreferences: () => {},
 			getPlatform: () => "darwin",
@@ -317,14 +390,15 @@ test("runPiFencedWithRestartLoop keeps --no-session runs ephemeral across restar
 			warn: () => {},
 			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			writeLockedSettingsFile: () => ({
 				settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
 				protectedWritePaths: [],
 			}),
 			validateFenceConfig: () => {},
-			createActiveSessionStatePath: () =>
-				"/tmp/pi-fenced/runtime/active-session.launcher-test.json",
-			readTrackedSessionPath: () => "/tmp/pi/sessions/current.jsonl",
+			createActiveLaunchStatePath: () =>
+				"/tmp/pi-fenced/runtime/active-launch.launcher-test.json",
+			readActiveLaunchSessionPath: () => "/tmp/pi/sessions/current.jsonl",
 			buildLaunchSpec: (input) => {
 				buildInputs.push({ piArgs: input.piArgs });
 				return { command: "fence", args: [], env: {} };
@@ -378,6 +452,7 @@ test("runPiFencedWithRestartLoop continues after malformed request outcome", asy
 			warn: (message) => warnings.push(message),
 			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			writeLockedSettingsFile: () => ({
 				settingsPath: "/tmp/pi-fenced/runtime/launcher-locked-settings.json",
 				protectedWritePaths: [],
@@ -433,6 +508,7 @@ test("runPiFencedWithRestartLoop preserves launcher mode and PI args across rest
 			warn: (message) => warnings.push(message),
 			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			writeLockedSettingsFile: () => {
 				lockCalls += 1;
 				return {
@@ -481,13 +557,13 @@ test("runPiFencedWithRestartLoop preserves launcher mode and PI args across rest
 		{
 			withoutFence: true,
 			fenceMonitor: false,
-			configPath: "/Users/test/.pi/agent/fence/global.json",
+			configPath: "/Users/test/.pi/agent/fence/presets/default-configuration.json",
 			piArgs: ["--model", "x/y", "hello"],
 		},
 		{
 			withoutFence: true,
 			fenceMonitor: false,
-			configPath: "/Users/test/.pi/agent/fence/global.json",
+			configPath: "/Users/test/.pi/agent/fence/presets/default-configuration.json",
 			piArgs: ["--model", "x/y", "hello"],
 		},
 	]);

@@ -41,7 +41,7 @@ function createTestPaths(): TestPaths {
 	const proposalsDir = join(runtimeDir, "proposals");
 	const backupsDir = join(runtimeDir, "backups");
 	const agentDir = join(rootDir, "agent");
-	const targetPath = join(agentDir, "fence", "global.json");
+	const targetPath = join(agentDir, "fence", "presets", "default-configuration.json");
 
 	mkdirSync(controlDir, { recursive: true });
 	mkdirSync(proposalsDir, { recursive: true });
@@ -113,6 +113,43 @@ test("runPiFencedApply rejects invalid request schema and cleans linked files", 
 		assert.equal(promptCalls, 0);
 		assert.equal(existsSync(requestPath), false);
 		assert.equal(existsSync(linkedProposalPath), false);
+	} finally {
+		cleanup(paths);
+	}
+});
+
+test("runPiFencedApply rejects selection metadata target for global scope", async () => {
+	const paths = createTestPaths();
+	try {
+		const requestId = randomUUID();
+		const requestPath = join(paths.controlDir, `request-${requestId}.json`);
+		const proposalPath = join(paths.proposalsDir, `${requestId}.json`);
+		const selectionTargetPath = join(paths.agentDir, "fence", "selection.json");
+
+		writeFileSync(proposalPath, '{"selectedPreset":"travel"}\n', "utf-8");
+		writeValidRequest({
+			requestPath,
+			requestId,
+			targetPath: selectionTargetPath,
+			proposalPath,
+			baseSha256: sha256(""),
+		});
+
+		const outcome = await runPiFencedApply({
+			env: { PI_CODING_AGENT_DIR: paths.agentDir },
+			paths,
+			dependencies: {
+				validateFenceConfig: () => {},
+				promptDecision: async () => "apply",
+				print: () => {},
+				warn: () => {},
+			},
+		});
+
+		assert.equal(outcome.type, "invalid-request");
+		assert.match(outcome.message, /selection\.json/);
+		assert.equal(existsSync(requestPath), false);
+		assert.equal(existsSync(proposalPath), false);
 	} finally {
 		cleanup(paths);
 	}

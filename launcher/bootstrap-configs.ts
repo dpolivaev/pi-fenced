@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { buildSelectionFileContent, DEFAULT_PRESET_NAME } from "./global-presets.ts";
 import type { ResolvedFencePaths } from "./path-resolution.ts";
 
 export const FENCE_BASE_BOOTSTRAP_CONTENT = '{"extends":"code"}\n';
-export const GLOBAL_BOOTSTRAP_CONTENT = '{"extends":"@base"}\n';
+export const DEFAULT_PRESET_BOOTSTRAP_CONTENT = '{"extends":"@base"}\n';
 
 export interface BootstrapFileOps {
 	existsSync: (path: string) => boolean;
@@ -13,7 +14,8 @@ export interface BootstrapFileOps {
 
 export interface BootstrapResult {
 	createdFenceBaseConfig: boolean;
-	createdGlobalConfig: boolean;
+	createdDefaultPreset: boolean;
+	createdSelectionMetadata: boolean;
 }
 
 function ensureBootstrapFile(
@@ -31,7 +33,7 @@ function ensureBootstrapFile(
 }
 
 export function ensureBootstrapConfigs(
-	paths: Pick<ResolvedFencePaths, "fenceBaseConfigPath" | "globalConfigPath">,
+	paths: Pick<ResolvedFencePaths, "fenceBaseConfigPath" | "defaultPresetPath" | "selectionPath">,
 	fileOps: BootstrapFileOps = {
 		existsSync,
 		mkdirSync: (pathValue) => mkdirSync(pathValue, { recursive: true }),
@@ -43,14 +45,20 @@ export function ensureBootstrapConfigs(
 		FENCE_BASE_BOOTSTRAP_CONTENT,
 		fileOps,
 	);
-	const createdGlobalConfig = ensureBootstrapFile(
-		paths.globalConfigPath,
-		GLOBAL_BOOTSTRAP_CONTENT,
+	const createdDefaultPreset = ensureBootstrapFile(
+		paths.defaultPresetPath,
+		DEFAULT_PRESET_BOOTSTRAP_CONTENT,
+		fileOps,
+	);
+	const createdSelectionMetadata = ensureBootstrapFile(
+		paths.selectionPath,
+		buildSelectionFileContent(DEFAULT_PRESET_NAME),
 		fileOps,
 	);
 
 	return {
 		createdFenceBaseConfig,
-		createdGlobalConfig,
+		createdDefaultPreset,
+		createdSelectionMetadata,
 	};
 }

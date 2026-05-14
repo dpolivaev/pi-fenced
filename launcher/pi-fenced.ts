@@ -2,10 +2,18 @@ import { existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-	PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV,
-	createActiveSessionStatePath,
-	readTrackedSessionPath,
-} from "./active-session-state.ts";
+	PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV,
+	createActiveLaunchStatePath,
+	initializeActiveLaunchState,
+	readActiveLaunchSessionPath,
+} from "./active-launch-state.ts";
+import {
+	listGlobalPresetNames,
+	readSelectedPresetName,
+	resolvePresetPath,
+	resolveSelectedGlobalPreset,
+	writeSelectedPresetName,
+} from "./global-presets.ts";
 import {
 	APPLY_CALLER_ENV_KEY,
 	APPLY_CALLER_ENV_VALUE,
@@ -36,8 +44,11 @@ export interface RunPiFencedDependencies {
 	warn: (message: string) => void;
 	resolveFencePaths: (input: { env: NodeJS.ProcessEnv }) => ResolvedFencePaths;
 	ensureBootstrapConfigs: (
-		paths: Pick<ResolvedFencePaths, "fenceBaseConfigPath" | "globalConfigPath">,
+		paths: Pick<ResolvedFencePaths, "fenceBaseConfigPath" | "defaultPresetPath" | "selectionPath">,
 	) => void;
+	resolveSelectedGlobalPreset: (
+		paths: Pick<ResolvedFencePaths, "presetsDirectoryPath" | "selectionPath">,
+	) => { presetName: string; presetPath: string };
 	readLauncherPreferences: (preferencesPath: string) => LauncherPreferences;
 	writeLauncherPreferences: (
 		preferencesPath: string,
@@ -46,15 +57,17 @@ export interface RunPiFencedDependencies {
 	getPlatform: () => NodeJS.Platform;
 	validateFenceConfig: (configPath: string) => void;
 	writeLockedSettingsFile: (input: {
-		fencePaths: Pick<ResolvedFencePaths, "fenceBaseConfigPath" | "globalConfigPath">;
+		activePresetPath: string;
+		fencePaths: Pick<ResolvedFencePaths, "fenceDirectoryPath" | "fenceBaseConfigPath">;
 		launcherPreferencesPath?: string;
 		includeDenyWrite?: boolean;
 		enableMacosPasteboard?: boolean;
 	}) => SelfProtectionResult;
 	buildLaunchSpec: (input: BuildLaunchSpecInput) => LaunchSpec;
 	runLaunchSpec: (spec: LaunchSpec) => { exitCode: number };
-	createActiveSessionStatePath: () => string;
-	readTrackedSessionPath: (statePath: string) => string | undefined;
+	createActiveLaunchStatePath: () => string;
+	initializeActiveLaunchState: (statePath: string, activeGlobalPresetPath: string) => void;
+	readActiveLaunchSessionPath: (statePath: string) => string | undefined;
 }
 
 export interface RunPiFencedInput {
@@ -77,9 +90,11 @@ interface PreparedLaunchContext<TDependencies extends RunPiFencedDependencies> {
 	env: NodeJS.ProcessEnv;
 	parsed: ReturnType<typeof parseLauncherArguments>;
 	paths: ResolvedFencePaths;
+	activePresetName: string;
+	activePresetPath: string;
 	activeSettingsPath: string;
 	generatedLockedSettingsPath?: string;
-	activeSessionStatePath: string;
+	activeLaunchStatePath: string;
 	dependencies: TDependencies;
 }
 
@@ -92,6 +107,7 @@ function createBaseDependencies(
 		warn: (message) => console.warn(`${DEFAULT_WARNING_PREFIX} ${message}`),
 		resolveFencePaths: ({ env: envValue }) => resolveFencePaths({ env: envValue }),
 		ensureBootstrapConfigs,
+		resolveSelectedGlobalPreset,
 		readLauncherPreferences,
 		writeLauncherPreferences,
 		getPlatform: () => process.platform,
@@ -99,8 +115,9 @@ function createBaseDependencies(
 		writeLockedSettingsFile,
 		buildLaunchSpec,
 		runLaunchSpec,
-		createActiveSessionStatePath,
-		readTrackedSessionPath,
+		createActiveLaunchStatePath,
+		initializeActiveLaunchState,
+		readActiveLaunchSessionPath,
 		...overrides,
 	};
 }
@@ -159,6 +176,9 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 ): PreparedLaunchContext<TDependencies> {
 	const env = input.env ?? process.env;
 	const parsed = parseLauncherArguments(input.argv);
+	if (parsed.presetCommand) {
+		throw new Error("preset commands must be handled before launching PI");
+	}
 	for (const warning of parsed.warnings) {
 		dependencies.warn(warning);
 	}
@@ -166,8 +186,14 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 	const paths = dependencies.resolveFencePaths({ env });
 	dependencies.ensureBootstrapConfigs({
 		fenceBaseConfigPath: paths.fenceBaseConfigPath,
-		globalConfigPath: paths.globalConfigPath,
+		defaultPresetPath: paths.defaultPresetPath,
+		selectionPath: paths.selectionPath,
 	});
+	const { presetName: activePresetName, presetPath: activePresetPath } =
+		dependencies.resolveSelectedGlobalPreset({
+			presetsDirectoryPath: paths.presetsDirectoryPath,
+			selectionPath: paths.selectionPath,
+		});
 	const launcherPreferences = updateLauncherPreferences(parsed, paths, dependencies);
 
 	if (parsed.withoutFence && !parsed.allowSelfModify) {
@@ -193,13 +219,14 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 		dependencies.warn("macOS pasteboard access active for this fenced run.");
 	}
 
-	let activeSettingsPath = paths.globalConfigPath;
+	let activeSettingsPath = activePresetPath;
 	let generatedLockedSettingsPath: string | undefined;
 	if (!parsed.withoutFence && (enableMacosPasteboard || !parsed.allowSelfModify)) {
 		const lockedSettings = dependencies.writeLockedSettingsFile({
+			activePresetPath,
 			fencePaths: {
+				fenceDirectoryPath: paths.fenceDirectoryPath,
 				fenceBaseConfigPath: paths.fenceBaseConfigPath,
-				globalConfigPath: paths.globalConfigPath,
 			},
 			launcherPreferencesPath: paths.preferencesPath,
 			includeDenyWrite: !parsed.allowSelfModify,
@@ -209,15 +236,18 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 		generatedLockedSettingsPath = lockedSettings.settingsPath;
 	}
 
-	const activeSessionStatePath = dependencies.createActiveSessionStatePath();
+	const activeLaunchStatePath = dependencies.createActiveLaunchStatePath();
+	dependencies.initializeActiveLaunchState(activeLaunchStatePath, activePresetPath);
 
 	return {
 		env,
 		parsed,
 		paths,
+		activePresetName,
+		activePresetPath,
 		activeSettingsPath,
 		generatedLockedSettingsPath,
-		activeSessionStatePath,
+		activeLaunchStatePath,
 		dependencies,
 	};
 }
@@ -237,8 +267,7 @@ function launchSinglePiSession(
 		piArgs,
 		baseEnv: context.env,
 	});
-	spec.env[PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV] =
-		context.activeSessionStatePath;
+	spec.env[PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV] = context.activeLaunchStatePath;
 
 	return context.dependencies.runLaunchSpec(spec).exitCode;
 }
@@ -265,19 +294,19 @@ function cleanupGeneratedLockedSettingsFile(
 	}
 }
 
-function cleanupActiveSessionStateFile(
+function cleanupActiveLaunchStateFile(
 	context: PreparedLaunchContext<RunPiFencedDependencies>,
 ): void {
-	if (!existsSync(context.activeSessionStatePath)) {
+	if (!existsSync(context.activeLaunchStatePath)) {
 		return;
 	}
 
 	try {
-		unlinkSync(context.activeSessionStatePath);
+		unlinkSync(context.activeLaunchStatePath);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		context.dependencies.warn(
-			`failed to cleanup active session state file ${context.activeSessionStatePath}: ${message}`,
+			`failed to cleanup active launch state file ${context.activeLaunchStatePath}: ${message}`,
 		);
 	}
 }
@@ -323,17 +352,17 @@ export function stripSessionSelectorArgs(piArgs: string[]): string[] {
 
 export function buildRelaunchPiArgs(
 	basePiArgs: string[],
-	trackedSessionPath: string | undefined,
+	launchSessionPath: string | undefined,
 ): string[] {
 	if (
-		typeof trackedSessionPath !== "string" ||
-		trackedSessionPath.trim().length === 0 ||
+		typeof launchSessionPath !== "string" ||
+		launchSessionPath.trim().length === 0 ||
 		hasNoSessionFlag(basePiArgs)
 	) {
 		return [...basePiArgs];
 	}
 
-	return ["--session", trackedSessionPath, ...stripSessionSelectorArgs(basePiArgs)];
+	return ["--session", launchSessionPath, ...stripSessionSelectorArgs(basePiArgs)];
 }
 
 function logApplyOutcome(outcome: ApplyOutcome, warn: (message: string) => void): void {
@@ -351,7 +380,7 @@ export function runPiFenced(input: RunPiFencedInput): number {
 		return launchSinglePiSession(context, context.parsed.piArgs);
 	} finally {
 		cleanupGeneratedLockedSettingsFile(context);
-		cleanupActiveSessionStateFile(context);
+		cleanupActiveLaunchStateFile(context);
 	}
 }
 
@@ -390,19 +419,65 @@ export async function runPiFencedWithRestartLoop(input: RunPiFencedLoopInput): P
 				return launchExitCode;
 			}
 
-			const trackedSessionPath = dependencies.readTrackedSessionPath(
-				context.activeSessionStatePath,
+			const launchSessionPath = dependencies.readActiveLaunchSessionPath(
+				context.activeLaunchStatePath,
 			);
-			nextLaunchPiArgs = buildRelaunchPiArgs(context.parsed.piArgs, trackedSessionPath);
+			nextLaunchPiArgs = buildRelaunchPiArgs(context.parsed.piArgs, launchSessionPath);
 		}
 	} finally {
 		cleanupGeneratedLockedSettingsFile(context);
-		cleanupActiveSessionStateFile(context);
+		cleanupActiveLaunchStateFile(context);
 	}
+}
+
+async function handlePresetCommand(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
+	const parsed = parseLauncherArguments(argv);
+	const presetCommand = parsed.presetCommand;
+	if (!presetCommand) {
+		throw new Error("preset command expected");
+	}
+
+	const paths = resolveFencePaths({ env });
+	ensureBootstrapConfigs({
+		fenceBaseConfigPath: paths.fenceBaseConfigPath,
+		defaultPresetPath: paths.defaultPresetPath,
+		selectionPath: paths.selectionPath,
+	});
+
+	if (presetCommand.action === "current") {
+		console.log(readSelectedPresetName(paths.selectionPath));
+		return 0;
+	}
+
+	if (presetCommand.action === "list") {
+		const currentPreset = readSelectedPresetName(paths.selectionPath);
+		for (const presetName of listGlobalPresetNames(paths.presetsDirectoryPath)) {
+			console.log(`${presetName === currentPreset ? "*" : " "} ${presetName}`);
+		}
+		return 0;
+	}
+
+	const targetPresetPath = resolvePresetPath(
+		paths.presetsDirectoryPath,
+		presetCommand.presetName,
+	);
+	if (!existsSync(targetPresetPath)) {
+		throw new Error(
+			`Preset "${presetCommand.presetName}" does not exist at ${targetPresetPath}`,
+		);
+	}
+
+	writeSelectedPresetName(paths.selectionPath, presetCommand.presetName);
+	console.log(`Selected preset: ${presetCommand.presetName}`);
+	return 0;
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
 	try {
+		const parsed = parseLauncherArguments(argv);
+		if (parsed.presetCommand) {
+			return await handlePresetCommand(argv, process.env);
+		}
 		return await runPiFencedWithRestartLoop({ argv });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

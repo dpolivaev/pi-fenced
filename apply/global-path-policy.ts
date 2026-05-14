@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { extname, resolve } from "node:path";
 import { resolveFencePaths } from "../launcher/path-resolution.ts";
 import type { FenceConfigApplyRequest } from "./request-contract.ts";
 
@@ -9,7 +9,7 @@ export interface GlobalTargetPolicyInput {
 }
 
 export interface GlobalTargetPolicyResult {
-	expectedTargetPath: string;
+	expectedDirectoryPath: string;
 }
 
 export function assertGlobalTargetPolicy(input: GlobalTargetPolicyInput): GlobalTargetPolicyResult {
@@ -17,16 +17,22 @@ export function assertGlobalTargetPolicy(input: GlobalTargetPolicyInput): Global
 		throw new Error(`Global apply only supports scope=global (received ${input.request.scope})`);
 	}
 
-	const expectedTargetPath = resolveFencePaths({
+	const expectedDirectoryPath = resolveFencePaths({
 		env: input.env,
 		homeDir: input.homeDir,
-	}).globalConfigPath;
+	}).presetsDirectoryPath;
+	const resolvedTargetPath = resolve(input.request.targetPath);
+	const expectedDirectoryPrefix = `${resolve(expectedDirectoryPath)}/`;
 
-	if (resolve(input.request.targetPath) !== resolve(expectedTargetPath)) {
+	if (!resolvedTargetPath.startsWith(expectedDirectoryPrefix)) {
 		throw new Error(
-			`Request target path mismatch. Expected ${expectedTargetPath}, got ${input.request.targetPath}`,
+			`Global preset target must be inside ${expectedDirectoryPath}, got ${input.request.targetPath}`,
 		);
 	}
 
-	return { expectedTargetPath };
+	if (extname(resolvedTargetPath) !== ".json") {
+		throw new Error(`Global preset target must be a .json file: ${input.request.targetPath}`);
+	}
+
+	return { expectedDirectoryPath };
 }

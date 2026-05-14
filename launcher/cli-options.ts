@@ -6,9 +6,62 @@ export interface ParsedLauncherArguments {
 	disallowMacosPasteboardPermanently: boolean;
 	piArgs: string[];
 	warnings: string[];
+	presetCommand?:
+		| { action: "list" }
+		| { action: "current" }
+		| { action: "use"; presetName: string };
+}
+
+function parsePresetCommand(argv: string[]): ParsedLauncherArguments {
+	const [action, value, extra] = argv;
+	if (action === "list" && value === undefined) {
+		return {
+			withoutFence: false,
+			fenceMonitor: false,
+			allowSelfModify: false,
+			allowMacosPasteboardPermanently: false,
+			disallowMacosPasteboardPermanently: false,
+			piArgs: [],
+			warnings: [],
+			presetCommand: { action: "list" },
+		};
+	}
+
+	if (action === "current" && value === undefined) {
+		return {
+			withoutFence: false,
+			fenceMonitor: false,
+			allowSelfModify: false,
+			allowMacosPasteboardPermanently: false,
+			disallowMacosPasteboardPermanently: false,
+			piArgs: [],
+			warnings: [],
+			presetCommand: { action: "current" },
+		};
+	}
+
+	if (action === "use" && typeof value === "string" && value.trim().length > 0 && extra === undefined) {
+		return {
+			withoutFence: false,
+			fenceMonitor: false,
+			allowSelfModify: false,
+			allowMacosPasteboardPermanently: false,
+			disallowMacosPasteboardPermanently: false,
+			piArgs: [],
+			warnings: [],
+			presetCommand: { action: "use", presetName: value.trim() },
+		};
+	}
+
+	throw new Error(
+		"Usage: pi-fenced preset list | current | use <name>",
+	);
 }
 
 export function parseLauncherArguments(argv: string[]): ParsedLauncherArguments {
+	if (argv[0] === "preset") {
+		return parsePresetCommand(argv.slice(1));
+	}
 	let withoutFence = false;
 	let fenceMonitor = false;
 	let allowSelfModify = false;

@@ -120,26 +120,40 @@ The extension requires launcher-managed runtime:
 
 The footer status label for key `pi-fenced` indicates launcher mode:
 
-- `🔒 fence` when fenced runtime is active
+- `🔒 fence` when fenced runtime is active on the default preset
+- `🔒 fence <presetName>` when fenced runtime is active on a
+  non-default preset
 - `yolo` when launcher runs with `--without-fence`
 
-### Global config ownership
+### Global preset ownership
 
-Global target path is:
+Global presets live under:
 
-- `<agentDir>/fence/global.json`
+- `<agentDir>/fence/presets/`
+
+Launcher-managed metadata outside that preset directory:
+
+- `<agentDir>/fence/selection.json` storing the default preset for
+  future fresh launches
+
+Preset files inside `fence/presets`:
+
+- `default-configuration.json`
+- any additional named preset files such as `travel.json`
 
 `agentDir` resolution:
 
 - `PI_CODING_AGENT_DIR` when set (supports `~` and `~/...`)
 - otherwise `~/.pi/agent`
 
-Bootstrap chain on launcher startup:
+Bootstrap on launcher startup:
 
 1. ensure `~/.config/fence/fence.json` exists,
    create `{"extends":"code"}` when missing
-2. ensure `<agentDir>/fence/global.json` exists,
-   create `{"extends":"@base"}` when missing
+2. ensure `<agentDir>/fence/presets/default-configuration.json`
+   exists, create `{"extends":"@base"}` when missing
+3. ensure `<agentDir>/fence/selection.json` exists, selecting
+   `default-configuration` when missing
 
 OpenAI setup hint (required when using OpenAI models/providers and OpenAI account OAuth/subscription flows):
 
@@ -185,6 +199,14 @@ Unlock mode (fenced, maintenance/development):
 
 ```bash
 pi-fenced --allow-self-modify
+```
+
+Preset management:
+
+```bash
+pi-fenced preset list
+pi-fenced preset current
+pi-fenced preset use <name>
 ```
 
 Persistent macOS pasteboard access opt-in (applies to future fenced
@@ -237,7 +259,7 @@ When default self-protection is active (that is, `--allow-self-modify`
 is not used), the overlay adds `filesystem.denyWrite` protections for:
 
 - full `pi-fenced` package root (the launcher installation path)
-- `<agentDir>/fence/global.json` and its parent directory
+- the full `<agentDir>/fence` directory
 - `~/.config/fence/fence.json` and its parent directory
 - `<agentDir>/pi-fenced/preferences.json` and its parent directory
 
@@ -277,7 +299,8 @@ Request contract uses replace-only apply:
 - usage: `/configure-fence <change request>`
 - does not open interactive input when arguments are missing
 - shows usage/help text and exits when no change request is provided
-- always targets `<agentDir>/fence/global.json`
+- targets the active launcher-selected global preset file for the
+  current PI run
 - rejects vague/non-actionable requests with guidance
 - creates proposal + request under `/tmp/pi-fenced` for actionable changes
 - asks for confirmation and optional shutdown handoff
@@ -296,7 +319,7 @@ Mutation planning model for `/configure-fence`:
 Runs:
 
 ```bash
-fence config show --settings <agentDir>/fence/global.json
+fence config show --settings <active-global-preset>
 ```
 
 Displays Fence output **verbatim** (stderr chain + stdout effective
@@ -336,7 +359,8 @@ From PI:
 - for a single pending request:
   - request schema validity
   - `scope === "global"`
-  - request target path is `<agentDir>/fence/global.json`
+  - request target path is a preset `.json` file inside
+    `<agentDir>/fence/presets/`
   - proposal JSON validates through Fence
   - `baseSha256` matches current target content
 

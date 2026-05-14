@@ -29,12 +29,12 @@ test("buildMutationSystemPrompt is deterministic across calls", () => {
 test("buildMutationPrompt resolves placeholders and keeps request context", () => {
 	const prompt = buildMutationPrompt({
 		requestText: "Enable strict read isolation and keep command defaults",
-		targetPath: "/Users/test/.pi/agent/fence/global.json",
+		targetPath: "/Users/test/.pi/agent/fence/presets/default-configuration.json",
 		existingContent: undefined,
 	});
 
 	assert.match(prompt, /Enable strict read isolation and keep command defaults/);
-	assert.match(prompt, /Target file path: \/Users\/test\/.pi\/agent\/fence\/global\.json/);
+	assert.match(prompt, /Target file path: \/Users\/test\/.pi\/agent\/fence\/presets\/default-configuration\.json/);
 	assert.match(prompt, /requestValidity: "valid" or "invalid"/);
 	assert.match(prompt, /If request is not actionable, use requestValidity="invalid"/);
 	assert.match(prompt, /Target file does not exist\./);

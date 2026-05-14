@@ -3,14 +3,20 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { dirname, join } from "node:path";
 import test from "node:test";
 import {
+	DEFAULT_PRESET_BOOTSTRAP_CONTENT,
 	FENCE_BASE_BOOTSTRAP_CONTENT,
-	GLOBAL_BOOTSTRAP_CONTENT,
 	ensureBootstrapConfigs,
 } from "../launcher/bootstrap-configs.ts";
 import { parseLauncherArguments } from "../launcher/cli-options.ts";
 import { validateFenceConfig } from "../launcher/config-guard.ts";
 import { runPiFenced } from "../launcher/pi-fenced.ts";
-import { PI_AGENT_DIR_ENV, resolveAgentDir, resolveFencePaths } from "../launcher/path-resolution.ts";
+import {
+	DEFAULT_PRESET_FILE_NAME,
+	PI_AGENT_DIR_ENV,
+	SELECTION_FILE_NAME,
+	resolveAgentDir,
+	resolveFencePaths,
+} from "../launcher/path-resolution.ts";
 import { buildLaunchSpec } from "../launcher/run-under-fence.ts";
 
 test("parseLauncherArguments keeps unknown args as pi args", () => {
@@ -81,14 +87,20 @@ test("resolveAgentDir respects PI_CODING_AGENT_DIR with tilde expansion", () => 
 	assert.equal(resolved, "/Users/test/custom-agent");
 });
 
-test("resolveFencePaths returns Fence base and PI global paths", () => {
+test("resolveFencePaths returns Fence base, preset, and metadata paths", () => {
 	const paths = resolveFencePaths({ env: {}, homeDir: "/Users/test" });
 	assert.equal(paths.fenceBaseConfigPath, "/Users/test/.config/fence/fence.json");
-	assert.equal(paths.globalConfigPath, "/Users/test/.pi/agent/fence/global.json");
+	assert.equal(paths.fenceDirectoryPath, "/Users/test/.pi/agent/fence");
+	assert.equal(paths.presetsDirectoryPath, "/Users/test/.pi/agent/fence/presets");
+	assert.equal(
+		paths.defaultPresetPath,
+		`/Users/test/.pi/agent/fence/presets/${DEFAULT_PRESET_FILE_NAME}`,
+	);
+	assert.equal(paths.selectionPath, `/Users/test/.pi/agent/fence/${SELECTION_FILE_NAME}`);
 	assert.equal(paths.preferencesPath, "/Users/test/.pi/agent/pi-fenced/preferences.json");
 });
 
-test("ensureBootstrapConfigs writes defaults once and then stays idempotent", () => {
+test("ensureBootstrapConfigs writes default preset inventory once and then stays idempotent", () => {
 	const createdFiles = new Set<string>();
 	const writes: Array<{ path: string; content: string }> = [];
 	const mkdirs: string[] = [];
@@ -106,7 +118,8 @@ test("ensureBootstrapConfigs writes defaults once and then stays idempotent", ()
 
 	const paths = {
 		fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
-		globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
+		defaultPresetPath: `/Users/test/.pi/agent/fence/presets/${DEFAULT_PRESET_FILE_NAME}`,
+		selectionPath: `/Users/test/.pi/agent/fence/${SELECTION_FILE_NAME}`,
 		preferencesPath: "/Users/test/.pi/agent/pi-fenced/preferences.json",
 	};
 
@@ -115,18 +128,22 @@ test("ensureBootstrapConfigs writes defaults once and then stays idempotent", ()
 
 	assert.deepEqual(first, {
 		createdFenceBaseConfig: true,
-		createdGlobalConfig: true,
+		createdDefaultPreset: true,
+		createdSelectionMetadata: true,
 	});
 	assert.deepEqual(second, {
 		createdFenceBaseConfig: false,
-		createdGlobalConfig: false,
+		createdDefaultPreset: false,
+		createdSelectionMetadata: false,
 	});
 	assert.deepEqual(writes, [
 		{ path: paths.fenceBaseConfigPath, content: FENCE_BASE_BOOTSTRAP_CONTENT },
-		{ path: paths.globalConfigPath, content: GLOBAL_BOOTSTRAP_CONTENT },
+		{ path: paths.defaultPresetPath, content: DEFAULT_PRESET_BOOTSTRAP_CONTENT },
+		{ path: paths.selectionPath, content: '{\n  "selectedPreset": "default-configuration"\n}\n' },
 	]);
 	assert.deepEqual(mkdirs, [
 		"/Users/test/.config/fence",
+		"/Users/test/.pi/agent/fence/presets",
 		"/Users/test/.pi/agent/fence",
 	]);
 });
@@ -135,8 +152,18 @@ function createGlobalPaths() {
 	return {
 		agentDir: "/Users/test/.pi/agent",
 		fenceBaseConfigPath: "/Users/test/.config/fence/fence.json",
-		globalConfigPath: "/Users/test/.pi/agent/fence/global.json",
+		fenceDirectoryPath: "/Users/test/.pi/agent/fence",
+		presetsDirectoryPath: "/Users/test/.pi/agent/fence/presets",
+		defaultPresetPath: "/Users/test/.pi/agent/fence/presets/default-configuration.json",
+		selectionPath: "/Users/test/.pi/agent/fence/selection.json",
 		preferencesPath: "/Users/test/.pi/agent/pi-fenced/preferences.json",
+	};
+}
+
+function createResolvedPreset() {
+	return {
+		presetName: "default-configuration",
+		presetPath: "/Users/test/.pi/agent/fence/presets/default-configuration.json",
 	};
 }
 
@@ -144,7 +171,7 @@ test("buildLaunchSpec builds fenced invocation", () => {
 	const spec = buildLaunchSpec({
 		withoutFence: false,
 		fenceMonitor: true,
-		configPath: "/Users/test/.pi/agent/fence/global.json",
+		configPath: "/Users/test/.pi/agent/fence/presets/default-configuration.json",
 		piArgs: ["--model", "x/y"],
 		baseEnv: { PATH: "x" },
 	});
@@ -153,7 +180,7 @@ test("buildLaunchSpec builds fenced invocation", () => {
 	assert.deepEqual(spec.args, [
 		"-m",
 		"--settings",
-		"/Users/test/.pi/agent/fence/global.json",
+		"/Users/test/.pi/agent/fence/presets/default-configuration.json",
 		"--",
 		"pi",
 		"--model",
@@ -211,6 +238,7 @@ test("runPiFenced uses locked runtime settings in fenced mode by default", () =>
 			ensureBootstrapConfigs: () => {
 				events.push("bootstrap");
 			},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
 			writeLauncherPreferences: () => {},
 			getPlatform: () => "darwin",
@@ -264,6 +292,7 @@ test("runPiFenced removes generated locked settings file on exit", () => {
 				warn: () => {},
 				resolveFencePaths: () => createGlobalPaths(),
 				ensureBootstrapConfigs: () => {},
+				resolveSelectedGlobalPreset: () => createResolvedPreset(),
 				readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
 				writeLauncherPreferences: () => {},
 				getPlatform: () => "darwin",
@@ -300,6 +329,7 @@ test("runPiFenced skips locked settings when unlock flag is enabled", () => {
 			warn: (message) => warnings.push(message),
 			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
 			writeLauncherPreferences: () => {},
 			getPlatform: () => "darwin",
@@ -320,7 +350,7 @@ test("runPiFenced skips locked settings when unlock flag is enabled", () => {
 
 	assert.equal(exitCode, 0);
 	assert.equal(lockCalls, 0);
-	assert.deepEqual(validateCalls, ["/Users/test/.pi/agent/fence/global.json"]);
+	assert.deepEqual(validateCalls, ["/Users/test/.pi/agent/fence/presets/default-configuration.json"]);
 	assert.match(warnings.join("\n"), /SELF-MODIFY UNLOCKED/);
 });
 
@@ -341,6 +371,7 @@ test("runPiFenced uses runtime overlay when persistent macOS pasteboard access i
 			warn: (message) => warnings.push(message),
 			resolveFencePaths: () => createGlobalPaths(),
 			ensureBootstrapConfigs: () => {},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
 			writeLauncherPreferences: (pathValue, preferences) => {
 				writePreferenceCalls.push({
@@ -400,6 +431,7 @@ test("runPiFenced refuses --without-fence unless unlock flag is provided", () =>
 				dependencies: {
 					resolveFencePaths: () => createGlobalPaths(),
 					ensureBootstrapConfigs: () => {},
+					resolveSelectedGlobalPreset: () => createResolvedPreset(),
 					readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
 					writeLauncherPreferences: () => {},
 					getPlatform: () => "darwin",
@@ -431,6 +463,7 @@ test("runPiFenced allows --without-fence when unlock flag is provided", () => {
 			ensureBootstrapConfigs: () => {
 				bootstrapCalls += 1;
 			},
+			resolveSelectedGlobalPreset: () => createResolvedPreset(),
 			readLauncherPreferences: () => ({ allowMacosPasteboard: false }),
 			writeLauncherPreferences: () => {},
 			getPlatform: () => "darwin",

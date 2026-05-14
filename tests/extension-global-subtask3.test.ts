@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -16,9 +17,10 @@ import {
 	composeShowFenceConfigOutput,
 	isLauncherManagedRuntime,
 	registerPiFencedExtension,
+	resolveGlobalConfigTargetPath,
 	writeRequestArtifacts,
 } from "../index.ts";
-import { PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV } from "../launcher/active-session-state.ts";
+import { PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV } from "../launcher/active-launch-state.ts";
 
 interface RegisteredCommand {
 	description?: string;
@@ -128,10 +130,61 @@ test("registerPiFencedExtension managed mode registers commands", async () => {
 	assert.deepEqual(statuses, [{ key: "pi-fenced", text: "🔒 fence" }]);
 });
 
+test("registerPiFencedExtension shows fenced non-default preset in status", async () => {
+	const runtimeRoot = mkdtempSync("/tmp/pi-fenced-status-preset-");
+	const statePath = join(runtimeRoot, "runtime", "active-launch.test.json");
+	mkdirSync(dirname(statePath), { recursive: true });
+
+	try {
+		writeFileSync(
+			statePath,
+			JSON.stringify({
+				activeGlobalPresetPath: "/tmp/pi/agent/fence/presets/travel.json",
+				updatedAt: "2026-05-14T00:00:00.000Z",
+			}),
+			"utf-8",
+		);
+
+		const harness = createFakeApiHarness();
+		registerPiFencedExtension(harness.api, {
+			PI_FENCED_LAUNCHER: "1",
+			FENCE_SANDBOX: "1",
+			[PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV]: statePath,
+		});
+
+		const statuses: Array<{ key: string; text: string | undefined }> = [];
+		await harness.sessionStartHandlers[0](
+			{ type: "session_start", reason: "startup" },
+			{
+				ui: {
+					setStatus: (key: string, text: string | undefined) => statuses.push({ key, text }),
+				},
+			},
+		);
+
+		assert.deepEqual(statuses, [{ key: "pi-fenced", text: "🔒 fence travel" }]);
+	} finally {
+		rmSync(runtimeRoot, { recursive: true, force: true });
+	}
+});
+
 test("registerPiFencedExtension shows yolo status when fence is disabled", async () => {
+	const runtimeRoot = mkdtempSync("/tmp/pi-fenced-status-yolo-");
+	const statePath = join(runtimeRoot, "runtime", "active-launch.test.json");
+	mkdirSync(dirname(statePath), { recursive: true });
+	writeFileSync(
+		statePath,
+		JSON.stringify({
+			activeGlobalPresetPath: "/tmp/pi/agent/fence/presets/travel.json",
+			updatedAt: "2026-05-14T00:00:00.000Z",
+		}),
+		"utf-8",
+	);
+
 	const harness = createFakeApiHarness();
 	registerPiFencedExtension(harness.api, {
 		PI_FENCED_LAUNCHER: "1",
+		[PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV]: statePath,
 	});
 
 	assert.equal(harness.sessionStartHandlers.length, 1);
@@ -147,17 +200,28 @@ test("registerPiFencedExtension shows yolo status when fence is disabled", async
 	);
 
 	assert.deepEqual(statuses, [{ key: "pi-fenced", text: "yolo" }]);
+	rmSync(runtimeRoot, { recursive: true, force: true });
 });
 
-test("session_start tracks active session file for launcher restarts", async () => {
+test("session_start tracks active session file while preserving active preset path", async () => {
 	const runtimeRoot = mkdtempSync("/tmp/pi-fenced-session-state-");
-	const statePath = join(runtimeRoot, "runtime", "active-session.test.json");
+	const statePath = join(runtimeRoot, "runtime", "active-launch.test.json");
 
 	try {
+		mkdirSync(dirname(statePath), { recursive: true });
+		writeFileSync(
+			statePath,
+			JSON.stringify({
+				activeGlobalPresetPath: "/tmp/pi/agent/fence/presets/default-configuration.json",
+				updatedAt: "2026-04-26T00:00:00.000Z",
+			}),
+			"utf-8",
+		);
+
 		const harness = createFakeApiHarness();
 		registerPiFencedExtension(harness.api, {
 			PI_FENCED_LAUNCHER: "1",
-			[PI_FENCED_ACTIVE_SESSION_STATE_PATH_ENV]: statePath,
+			[PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV]: statePath,
 		});
 
 		assert.equal(harness.sessionStartHandlers.length, 1);
@@ -178,11 +242,16 @@ test("session_start tracks active session file for launcher restarts", async () 
 		assert.equal(existsSync(statePath), true);
 		const tracked = JSON.parse(readFileSync(statePath, "utf-8"));
 		assert.equal(tracked.sessionFile, "/tmp/pi/sessions/current.jsonl");
+		assert.equal(
+			tracked.activeGlobalPresetPath,
+			"/tmp/pi/agent/fence/presets/default-configuration.json",
+		);
 
 		writeFileSync(
 			statePath,
 			JSON.stringify({
 				sessionFile: "/tmp/pi/sessions/old.jsonl",
+				activeGlobalPresetPath: "/tmp/pi/agent/fence/presets/default-configuration.json",
 				updatedAt: "2026-04-26T00:00:00.000Z",
 			}),
 			"utf-8",
@@ -201,7 +270,39 @@ test("session_start tracks active session file for launcher restarts", async () 
 			},
 		);
 
-		assert.equal(existsSync(statePath), false);
+		assert.equal(existsSync(statePath), true);
+		const cleared = JSON.parse(readFileSync(statePath, "utf-8"));
+		assert.equal(cleared.sessionFile, undefined);
+		assert.equal(
+			cleared.activeGlobalPresetPath,
+			"/tmp/pi/agent/fence/presets/default-configuration.json",
+		);
+	} finally {
+		rmSync(runtimeRoot, { recursive: true, force: true });
+	}
+});
+
+test("resolveGlobalConfigTargetPath reads active preset path from launcher state", () => {
+	const runtimeRoot = mkdtempSync("/tmp/pi-fenced-active-target-");
+	const statePath = join(runtimeRoot, "runtime", "active-launch.test.json");
+	mkdirSync(dirname(statePath), { recursive: true });
+
+	try {
+		writeFileSync(
+			statePath,
+			JSON.stringify({
+				activeGlobalPresetPath: "/tmp/pi/agent/fence/presets/default-configuration.json",
+				updatedAt: "2026-05-14T00:00:00.000Z",
+			}),
+			"utf-8",
+		);
+
+		assert.equal(
+			resolveGlobalConfigTargetPath({
+				[PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV]: statePath,
+			}),
+			"/tmp/pi/agent/fence/presets/default-configuration.json",
+		);
 	} finally {
 		rmSync(runtimeRoot, { recursive: true, force: true });
 	}
@@ -242,7 +343,7 @@ test("buildGlobalRequestEnvelope builds replace-only global request with base ha
 	const existingContent = '{"network":{"allow":["localhost"]}}\n';
 	const envelope = buildGlobalRequestEnvelope({
 		requestId: "request-123",
-		targetPath: "/tmp/pi/agent/fence/global.json",
+		targetPath: "/tmp/pi/agent/fence/presets/default-configuration.json",
 		proposalPath: "/tmp/pi-fenced/proposals/request-123.json",
 		existingContent,
 		summary: "Allow localhost",
@@ -262,7 +363,7 @@ test("writeRequestArtifacts persists request/proposal pair", () => {
 	const requestPath = "/tmp/pi-fenced/control/request-req-1.json";
 	const requestEnvelope = buildGlobalRequestEnvelope({
 		requestId: "req-1",
-		targetPath: "/tmp/pi/agent/fence/global.json",
+		targetPath: "/tmp/pi/agent/fence/presets/default-configuration.json",
 		proposalPath,
 		existingContent: "{}\n",
 		summary: "Allow localhost",
@@ -308,7 +409,7 @@ test("writeRequestArtifacts cleans partial files when request write fails", () =
 	const requestPath = "/tmp/pi-fenced/control/request-req-2.json";
 	const requestEnvelope = buildGlobalRequestEnvelope({
 		requestId: "req-2",
-		targetPath: "/tmp/pi/agent/fence/global.json",
+		targetPath: "/tmp/pi/agent/fence/presets/default-configuration.json",
 		proposalPath,
 		existingContent: "{}\n",
 		summary: "Deny github.com",
@@ -359,67 +460,83 @@ test("composeInvalidConfigureFenceFeedback explains non-actionable requests", ()
 });
 
 test("show-fence-config command executes fence and shows combined output", async () => {
-	const harness = createFakeApiHarness({
-		execResult: {
-			stderr: "chain: @base -> code\n",
-			stdout: '{"network":{"allow":["localhost"]}}\n',
-			code: 0,
-			killed: false,
-		},
-	});
+	const runtimeRoot = mkdtempSync("/tmp/pi-fenced-active-preset-");
+	const statePath = join(runtimeRoot, "runtime", "active-launch.test.json");
+	mkdirSync(dirname(statePath), { recursive: true });
+	writeFileSync(
+		statePath,
+		JSON.stringify({
+			activeGlobalPresetPath: "/tmp/pi/agent-under-test/fence/presets/default-configuration.json",
+			updatedAt: "2026-05-14T00:00:00.000Z",
+		}),
+		"utf-8",
+	);
 
-	registerPiFencedExtension(harness.api, {
-		PI_FENCED_LAUNCHER: "1",
-		PI_CODING_AGENT_DIR: "/tmp/pi/agent-under-test",
-	});
-
-	const command = harness.commands.get("show-fence-config");
-	assert.ok(command, "show-fence-config command should be registered");
-
-	const customRenders: string[][] = [];
-	const notifications: Array<{ message: string; type: string | undefined }> = [];
-
-	await command!.handler("", {
-		cwd: "/workspace/project",
-		signal: undefined,
-		ui: {
-			custom: async (factory: any) => {
-				const component = await factory(
-					{
-						terminal: { rows: 18 },
-						requestRender: () => {},
-					},
-					{
-						fg: (_color: string, text: string) => text,
-						bold: (text: string) => text,
-					},
-					{
-						matches: () => false,
-					},
-					() => {},
-				);
-				customRenders.push(component.render(120));
-				return undefined;
+	try {
+		const harness = createFakeApiHarness({
+			execResult: {
+				stderr: "chain: @base -> code\n",
+				stdout: '{"network":{"allow":["localhost"]}}\n',
+				code: 0,
+				killed: false,
 			},
-			notify: (message: string, type?: string) => notifications.push({ message, type }),
-		},
-	});
+		});
 
-	assert.deepEqual(harness.execCalls, [
-		{
-			command: "fence",
-			args: [
-				"config",
-				"show",
-				"--settings",
-				"/tmp/pi/agent-under-test/fence/global.json",
-			],
-		},
-	]);
-	assert.equal(customRenders.length, 1);
-	assert.equal(customRenders[0][0], "/show-fence-config (read-only)");
-	assert.match(customRenders[0][1], /READ-ONLY/);
-	assert.ok(customRenders[0].includes("chain: @base -> code"));
-	assert.ok(customRenders[0].includes('{"network":{"allow":["localhost"]}}'));
-	assert.equal(notifications.length, 0);
+		registerPiFencedExtension(harness.api, {
+			PI_FENCED_LAUNCHER: "1",
+			[PI_FENCED_ACTIVE_LAUNCH_STATE_PATH_ENV]: statePath,
+		});
+
+		const command = harness.commands.get("show-fence-config");
+		assert.ok(command, "show-fence-config command should be registered");
+
+		const customRenders: string[][] = [];
+		const notifications: Array<{ message: string; type: string | undefined }> = [];
+
+		await command!.handler("", {
+			cwd: "/workspace/project",
+			signal: undefined,
+			ui: {
+				custom: async (factory: any) => {
+					const component = await factory(
+						{
+							terminal: { rows: 18 },
+							requestRender: () => {},
+						},
+						{
+							fg: (_color: string, text: string) => text,
+							bold: (text: string) => text,
+						},
+						{
+							matches: () => false,
+						},
+						() => {},
+					);
+					customRenders.push(component.render(120));
+					return undefined;
+				},
+				notify: (message: string, type?: string) => notifications.push({ message, type }),
+			},
+		});
+
+		assert.deepEqual(harness.execCalls, [
+			{
+				command: "fence",
+				args: [
+					"config",
+					"show",
+					"--settings",
+					"/tmp/pi/agent-under-test/fence/presets/default-configuration.json",
+				],
+			},
+		]);
+		assert.equal(customRenders.length, 1);
+		assert.equal(customRenders[0][0], "/show-fence-config (read-only)");
+		assert.match(customRenders[0][1], /READ-ONLY/);
+		assert.ok(customRenders[0].includes("chain: @base -> code"));
+		assert.ok(customRenders[0].includes('{"network":{"allow":["localhost"]}}'));
+		assert.equal(notifications.length, 0);
+	} finally {
+		rmSync(runtimeRoot, { recursive: true, force: true });
+	}
 });

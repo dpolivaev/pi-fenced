@@ -48,7 +48,8 @@ The extension is functional only in launcher-managed runtime:
    - `PI_FENCED_LAUNCHER=1`
    - `FENCE_SANDBOX=1`
    - Registers `/configure-fence` and `/show-fence-config`
-   - Sets status key `pi-fenced` to `🔒 fence`
+   - Sets status key `pi-fenced` to `🔒 fence` for the default
+     preset or `🔒 fence <presetName>` for a non-default preset
 
 2. **Launcher-managed unfenced mode (diagnostics/maintenance)**
    - `PI_FENCED_LAUNCHER=1`
@@ -76,17 +77,26 @@ Responsibilities:
   - PI args pass-through after `--`
 - Resolve paths:
   - `agentDir` from `PI_CODING_AGENT_DIR` or `~/.pi/agent`
-  - global target `<agentDir>/fence/global.json`
+  - Fence root directory `<agentDir>/fence/`
+  - preset directory `<agentDir>/fence/presets/`
+  - default preset `<agentDir>/fence/presets/default-configuration.json`
+  - preset selection metadata `<agentDir>/fence/selection.json`
   - Fence base `~/.config/fence/fence.json`
-- Bootstrap missing config files:
+- Bootstrap preset inventory:
   - `~/.config/fence/fence.json` with `{"extends":"code"}`
-  - `<agentDir>/fence/global.json` with `{"extends":"@base"}`
+  - `<agentDir>/fence/presets/default-configuration.json` with
+    `{"extends":"@base"}`
+  - `<agentDir>/fence/selection.json` selecting
+    `default-configuration`
 - Enforce mode policy:
   - refuse `--without-fence` unless `--allow-self-modify` is set
   - warn loudly when unlock mode is active
+- Resolve one active global preset per launcher run from
+  `selection.json`
 - In fenced + locked mode, generate a per-run settings overlay:
   - `/tmp/pi-fenced/runtime/launcher-locked-settings.<run-id>.json`
-  - overlay extends global config and injects `filesystem.denyWrite`
+  - overlay extends the selected preset and injects
+    `filesystem.denyWrite`
 - Launch PI:
   - fenced default: `fence [-m] --settings <active> -- pi <args>`
   - unfenced unlock: `pi <args>`
@@ -95,6 +105,8 @@ Responsibilities:
   - run PI
   - on PI exit run external apply workflow
   - restart unless apply outcome is `no-request`
+  - preserve the original selected preset across restarts even if the
+    default preset changes later
 - Cleanup:
   - remove this run's lock file on launcher exit
   - best-effort stale lock-file pruning on startup
@@ -104,15 +116,18 @@ Responsibilities:
 Responsibilities:
 
 - Apply launcher-managed runtime guard.
-- Publish runtime status (`🔒 fence` or `yolo`).
-- Implement `/configure-fence` (global-only request path).
+- Publish runtime status (`🔒 fence`, `🔒 fence <presetName>`, or
+  `yolo`).
+- Implement `/configure-fence` against the active launcher-selected
+  global preset.
 - Implement `/show-fence-config` for read-only effective config
-  inspection.
+  inspection of that active preset.
 
 `/configure-fence` flow:
 
 - Require non-empty request text and selected model.
-- Resolve global target path and read existing content.
+- Resolve the active launcher-selected preset path and read existing
+  content.
 - Build prompts:
   - deterministic system prompt from versioned template files
   - dynamic user prompt with request + existing content context
@@ -129,7 +144,7 @@ Responsibilities:
 
 `/show-fence-config` flow:
 
-- Run `fence config show --settings <global-target>`.
+- Run `fence config show --settings <active-global-preset>`.
 - Combine stderr+stdout verbatim.
 - Render output in a read-only scrollable viewer.
 
@@ -146,7 +161,8 @@ Responsibilities:
 - Parse and validate request envelope.
 - Enforce global-only target policy:
   - `scope` must be `global`
-  - `targetPath` must match resolved `<agentDir>/fence/global.json`
+  - `targetPath` must be a preset `.json` file inside
+    `<agentDir>/fence/presets/`
 - Validate proposal through Fence tooling.
 - Check `baseSha256` against current target content.
 - Show full-replace unified diff and prompt apply/reject.
@@ -184,10 +200,13 @@ All operational control artifacts live under `/tmp/pi-fenced`:
 - lock overlays:
   `/tmp/pi-fenced/runtime/launcher-locked-settings.<run-id>.json`
 
-Global target paths:
+Global preset paths:
 
 - Fence base: `~/.config/fence/fence.json`
-- PI global config: `<agentDir>/fence/global.json`
+- Fence root directory: `<agentDir>/fence/`
+- Preset directory: `<agentDir>/fence/presets/`
+- Default preset: `<agentDir>/fence/presets/default-configuration.json`
+- Selection metadata: `<agentDir>/fence/selection.json`
 
 ## Request envelope (v1, active)
 
@@ -211,7 +230,7 @@ Global target paths:
 When fenced and not explicitly unlocked, deny-write protection covers:
 
 - full `pi-fenced` package root
-- `<agentDir>/fence/global.json` and parent directory
+- full `<agentDir>/fence` directory
 - `~/.config/fence/fence.json` and parent directory
 
 Unlock mode (`--allow-self-modify`) intentionally disables this lock for
