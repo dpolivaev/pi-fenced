@@ -308,12 +308,12 @@ test("applyExactEdits rejects overlapping edits", () => {
 	);
 });
 
-test("ensureValidFenceConfigContent accepts object json and appends newline", () => {
+test("ensureValidFenceConfigContent pretty prints object json with trailing newline", () => {
 	const normalized = ensureValidFenceConfigContent('{"network":{}}');
-	assert.equal(normalized.endsWith("\n"), true);
+	assert.equal(normalized, '{\n  "network": {}\n}\n');
 });
 
-test("ensureValidFenceConfigContent accepts top-level extends", () => {
+test("ensureValidFenceConfigContent pretty prints top-level extends", () => {
 	const normalized = ensureValidFenceConfigContent('{"extends":"@base"}');
-	assert.equal(normalized, '{"extends":"@base"}\n');
+	assert.equal(normalized, '{\n  "extends": "@base"\n}\n');
 });

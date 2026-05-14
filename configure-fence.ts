@@ -422,7 +422,7 @@ export function ensureValidFenceConfigContent(content: string): string {
 		throw new Error("Fence config must be a JSON object.");
 	}
 
-	return content.endsWith("\n") ? content : `${content}\n`;
+	return `${JSON.stringify(parsed, null, 2)}\n`;
 }
 
 function requireNonEmptyString(value: unknown, fieldName: string): string {
