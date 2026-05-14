@@ -43,6 +43,19 @@ test("parseLauncherArguments handles launcher flags and separator", () => {
 	assert.deepEqual(parsed.warnings, []);
 });
 
+test("parseLauncherArguments treats --help before -- as launcher help", () => {
+	const parsed = parseLauncherArguments(["--fence-monitor", "--help", "--model", "x/y"]);
+	assert.equal(parsed.helpRequested, true);
+	assert.equal(parsed.fenceMonitor, true);
+	assert.deepEqual(parsed.piArgs, []);
+});
+
+test("parseLauncherArguments keeps --help after -- as a pi arg", () => {
+	const parsed = parseLauncherArguments(["--", "--help"]);
+	assert.equal(parsed.helpRequested, false);
+	assert.deepEqual(parsed.piArgs, ["--help"]);
+});
+
 test("parseLauncherArguments ignores monitor in without-fence mode with warning", () => {
 	const parsed = parseLauncherArguments(["--without-fence", "--fence-monitor"]);
 	assert.equal(parsed.withoutFence, true);

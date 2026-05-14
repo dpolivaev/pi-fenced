@@ -2,6 +2,7 @@ export interface ParsedLauncherArguments {
 	withoutFence: boolean;
 	fenceMonitor: boolean;
 	allowSelfModify: boolean;
+	helpRequested: boolean;
 	allowMacosPasteboardPermanently: boolean;
 	disallowMacosPasteboardPermanently: boolean;
 	piArgs: string[];
@@ -12,43 +13,38 @@ export interface ParsedLauncherArguments {
 		| { action: "use"; presetName: string };
 }
 
+function createDefaultParsedLauncherArguments(): ParsedLauncherArguments {
+	return {
+		withoutFence: false,
+		fenceMonitor: false,
+		allowSelfModify: false,
+		helpRequested: false,
+		allowMacosPasteboardPermanently: false,
+		disallowMacosPasteboardPermanently: false,
+		piArgs: [],
+		warnings: [],
+	};
+}
+
 function parsePresetCommand(argv: string[]): ParsedLauncherArguments {
 	const [action, value, extra] = argv;
 	if (action === "list" && value === undefined) {
 		return {
-			withoutFence: false,
-			fenceMonitor: false,
-			allowSelfModify: false,
-			allowMacosPasteboardPermanently: false,
-			disallowMacosPasteboardPermanently: false,
-			piArgs: [],
-			warnings: [],
+			...createDefaultParsedLauncherArguments(),
 			presetCommand: { action: "list" },
 		};
 	}
 
 	if (action === "current" && value === undefined) {
 		return {
-			withoutFence: false,
-			fenceMonitor: false,
-			allowSelfModify: false,
-			allowMacosPasteboardPermanently: false,
-			disallowMacosPasteboardPermanently: false,
-			piArgs: [],
-			warnings: [],
+			...createDefaultParsedLauncherArguments(),
 			presetCommand: { action: "current" },
 		};
 	}
 
 	if (action === "use" && typeof value === "string" && value.trim().length > 0 && extra === undefined) {
 		return {
-			withoutFence: false,
-			fenceMonitor: false,
-			allowSelfModify: false,
-			allowMacosPasteboardPermanently: false,
-			disallowMacosPasteboardPermanently: false,
-			piArgs: [],
-			warnings: [],
+			...createDefaultParsedLauncherArguments(),
 			presetCommand: { action: "use", presetName: value.trim() },
 		};
 	}
@@ -62,19 +58,15 @@ export function parseLauncherArguments(argv: string[]): ParsedLauncherArguments 
 	if (argv[0] === "preset") {
 		return parsePresetCommand(argv.slice(1));
 	}
-	let withoutFence = false;
-	let fenceMonitor = false;
-	let allowSelfModify = false;
-	let allowMacosPasteboardPermanently = false;
-	let disallowMacosPasteboardPermanently = false;
-	const piArgs: string[] = [];
+
+	const parsed = createDefaultParsedLauncherArguments();
 	let separatorReached = false;
 
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
 
 		if (separatorReached) {
-			piArgs.push(arg);
+			parsed.piArgs.push(arg);
 			continue;
 		}
 
@@ -83,37 +75,43 @@ export function parseLauncherArguments(argv: string[]): ParsedLauncherArguments 
 			continue;
 		}
 
+		if (arg === "--help") {
+			parsed.helpRequested = true;
+			parsed.piArgs = [];
+			break;
+		}
+
 		if (arg === "--without-fence") {
-			withoutFence = true;
+			parsed.withoutFence = true;
 			continue;
 		}
 
 		if (arg === "--fence-monitor") {
-			fenceMonitor = true;
+			parsed.fenceMonitor = true;
 			continue;
 		}
 
 		if (arg === "--allow-self-modify") {
-			allowSelfModify = true;
+			parsed.allowSelfModify = true;
 			continue;
 		}
 
 		if (arg === "--allow-macos-pasteboard-permanently") {
-			allowMacosPasteboardPermanently = true;
+			parsed.allowMacosPasteboardPermanently = true;
 			continue;
 		}
 
 		if (arg === "--disallow-macos-pasteboard-permanently") {
-			disallowMacosPasteboardPermanently = true;
+			parsed.disallowMacosPasteboardPermanently = true;
 			continue;
 		}
 
-		piArgs.push(arg);
+		parsed.piArgs.push(arg);
 	}
 
 	if (
-		allowMacosPasteboardPermanently &&
-		disallowMacosPasteboardPermanently
+		parsed.allowMacosPasteboardPermanently &&
+		parsed.disallowMacosPasteboardPermanently
 	) {
 		throw new Error(
 			"--allow-macos-pasteboard-permanently and " +
@@ -121,19 +119,10 @@ export function parseLauncherArguments(argv: string[]): ParsedLauncherArguments 
 		);
 	}
 
-	const warnings: string[] = [];
-	if (withoutFence && fenceMonitor) {
-		fenceMonitor = false;
-		warnings.push("--fence-monitor ignored in --without-fence mode");
+	if (parsed.withoutFence && parsed.fenceMonitor) {
+		parsed.fenceMonitor = false;
+		parsed.warnings.push("--fence-monitor ignored in --without-fence mode");
 	}
 
-	return {
-		withoutFence,
-		fenceMonitor,
-		allowSelfModify,
-		allowMacosPasteboardPermanently,
-		disallowMacosPasteboardPermanently,
-		piArgs,
-		warnings,
-	};
+	return parsed;
 }

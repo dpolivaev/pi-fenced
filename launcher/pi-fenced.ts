@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -100,6 +101,95 @@ interface PreparedLaunchContext<TDependencies extends RunPiFencedDependencies> {
 
 const DEFAULT_WARNING_PREFIX = "pi-fenced:";
 
+export const PI_FENCED_HELP_TEXT = [
+	"pi-fenced - PI launcher for Fence-managed sessions",
+	"",
+	"Usage:",
+	"  pi-fenced [launcher options] [--] [pi args...]",
+	"  pi-fenced preset list",
+	"  pi-fenced preset current",
+	"  pi-fenced preset use <name>",
+	"",
+	"Launcher options:",
+	"  --help",
+	"      Show pi-fenced help, then pi --help",
+	"  --fence-monitor",
+	"      Enable Fence monitor mode",
+	"  --without-fence",
+	"      Run pi directly (requires --allow-self-modify)",
+	"  --allow-self-modify",
+	"      Disable default self-protection for this run",
+	"  --allow-macos-pasteboard-permanently",
+	"      Persist fenced macOS pasteboard access opt-in",
+	"  --disallow-macos-pasteboard-permanently",
+	"      Remove fenced macOS pasteboard access opt-in",
+	"",
+	"Forwarding:",
+	"  Remaining args are forwarded to pi.",
+	"  Use -- to force all following tokens to be treated as pi args.",
+].join("\n");
+
+interface MainDependencies {
+	handlePresetCommand: (argv: string[], env: NodeJS.ProcessEnv) => Promise<number>;
+	runRestartLoop: (input: RunPiFencedLoopInput) => Promise<number>;
+	runPiHelp: (env: NodeJS.ProcessEnv) => number;
+	writeStdout: (text: string) => void;
+	writeStderr: (text: string) => void;
+}
+
+interface HelpCommandRunnerResult {
+	status: number | null;
+	error?: Error;
+}
+
+type HelpCommandRunner = (
+	command: string,
+	args: string[],
+	options: { stdio: "inherit"; env: NodeJS.ProcessEnv },
+) => HelpCommandRunnerResult;
+
+function runPiHelpCommand(
+	env: NodeJS.ProcessEnv,
+	runner: HelpCommandRunner = (command, args, options) => {
+		const result = spawnSync(command, args, {
+			stdio: options.stdio,
+			env: options.env,
+		});
+		return {
+			status: result.status,
+			error: result.error,
+		};
+	},
+): number {
+	const result = runner("pi", ["--help"], {
+		stdio: "inherit",
+		env,
+	});
+
+	if (result.error) {
+		throw result.error;
+	}
+
+	return result.status ?? 1;
+}
+
+function createMainDependencies(
+	overrides: Partial<MainDependencies> | undefined,
+): MainDependencies {
+	return {
+		handlePresetCommand,
+		runRestartLoop: (input) => runPiFencedWithRestartLoop(input),
+		runPiHelp: (env) => runPiHelpCommand(env),
+		writeStdout: (text) => {
+			process.stdout.write(text);
+		},
+		writeStderr: (text) => {
+			process.stderr.write(text);
+		},
+		...overrides,
+	};
+}
+
 function createBaseDependencies(
 	overrides: Partial<RunPiFencedDependencies> | undefined,
 ): RunPiFencedDependencies {
@@ -178,6 +268,9 @@ function prepareLaunchContext<TDependencies extends RunPiFencedDependencies>(
 	const parsed = parseLauncherArguments(input.argv);
 	if (parsed.presetCommand) {
 		throw new Error("preset commands must be handled before launching PI");
+	}
+	if (parsed.helpRequested) {
+		throw new Error("launcher help must be handled before launching PI");
 	}
 	for (const warning of parsed.warnings) {
 		dependencies.warn(warning);
@@ -472,16 +565,25 @@ async function handlePresetCommand(argv: string[], env: NodeJS.ProcessEnv): Prom
 	return 0;
 }
 
-export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+export async function main(
+	argv: string[] = process.argv.slice(2),
+	dependenciesOverrides?: Partial<MainDependencies>,
+): Promise<number> {
+	const dependencies = createMainDependencies(dependenciesOverrides);
+
 	try {
 		const parsed = parseLauncherArguments(argv);
 		if (parsed.presetCommand) {
-			return await handlePresetCommand(argv, process.env);
+			return await dependencies.handlePresetCommand(argv, process.env);
 		}
-		return await runPiFencedWithRestartLoop({ argv });
+		if (parsed.helpRequested) {
+			dependencies.writeStdout(`${PI_FENCED_HELP_TEXT}\n\n`);
+			return dependencies.runPiHelp(process.env);
+		}
+		return await dependencies.runRestartLoop({ argv });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(`${DEFAULT_WARNING_PREFIX} ${message}`);
+		dependencies.writeStderr(`${DEFAULT_WARNING_PREFIX} ${message}\n`);
 		return 1;
 	}
 }

@@ -8,7 +8,7 @@ import {
 	readSelectedPresetName,
 	writeSelectedPresetName,
 } from "../launcher/global-presets.ts";
-import { main } from "../launcher/pi-fenced.ts";
+import { PI_FENCED_HELP_TEXT, main } from "../launcher/pi-fenced.ts";
 import {
 	PI_AGENT_DIR_ENV,
 	SELECTION_FILE_NAME,
@@ -53,6 +53,56 @@ test("parseLauncherArguments rejects malformed preset command", () => {
 		() => parseLauncherArguments(["preset", "use"]),
 		/Usage: pi-fenced preset list \| current \| use <name>/,
 	);
+});
+
+test("main --help prints pi-fenced help before pi help", async () => {
+	const events: string[] = [];
+	const stdout: string[] = [];
+	const stderr: string[] = [];
+
+	const exitCode = await main(["--help"], {
+		handlePresetCommand: async () => {
+			events.push("preset");
+			return 9;
+		},
+		runRestartLoop: async () => {
+			events.push("restart-loop");
+			return 8;
+		},
+		runPiHelp: () => {
+			events.push("pi-help");
+			stdout.push("pi help\n");
+			return 0;
+		},
+		writeStdout: (text) => {
+			stdout.push(text);
+		},
+		writeStderr: (text) => {
+			stderr.push(text);
+		},
+	});
+
+	assert.equal(exitCode, 0);
+	assert.deepEqual(events, ["pi-help"]);
+	assert.deepEqual(stdout, [`${PI_FENCED_HELP_TEXT}\n\n`, "pi help\n"]);
+	assert.deepEqual(stderr, []);
+});
+
+test("main --help propagates pi help failure exit code", async () => {
+	const stdout: string[] = [];
+
+	const exitCode = await main(["--help"], {
+		runRestartLoop: async () => 0,
+		handlePresetCommand: async () => 0,
+		runPiHelp: () => 23,
+		writeStdout: (text) => {
+			stdout.push(text);
+		},
+		writeStderr: () => {},
+	});
+
+	assert.equal(exitCode, 23);
+	assert.deepEqual(stdout, [`${PI_FENCED_HELP_TEXT}\n\n`]);
 });
 
 test("listGlobalPresetNames reads preset files from presets directory", () => {

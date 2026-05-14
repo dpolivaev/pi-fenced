@@ -104,6 +104,9 @@ pi list
 pi-fenced --help
 ```
 
+`pi-fenced --help` prints pi-fenced launcher help first, then the
+current `pi --help` output.
+
 `pi-fenced-apply` is internal-only and invoked by `pi-fenced`.
 Direct invocation is rejected.
 
