@@ -30,10 +30,14 @@ export type ChildRunner = (
 ) => ChildRunnerResult;
 
 export function buildLaunchSpec(input: BuildLaunchSpecInput): LaunchSpec {
+	const baseEnv = input.baseEnv ?? process.env;
 	const env: NodeJS.ProcessEnv = {
-		...(input.baseEnv ?? process.env),
+		...baseEnv,
 		PI_FENCED_LAUNCHER: "1",
 	};
+	if (baseEnv.NODE_USE_ENV_PROXY === undefined) {
+		env.NODE_USE_ENV_PROXY = "1";
+	}
 
 	if (input.withoutFence) {
 		return {

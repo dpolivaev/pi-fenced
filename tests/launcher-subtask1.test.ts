@@ -200,6 +200,7 @@ test("buildLaunchSpec builds fenced invocation", () => {
 		"x/y",
 	]);
 	assert.equal(spec.env.PI_FENCED_LAUNCHER, "1");
+	assert.equal(spec.env.NODE_USE_ENV_PROXY, "1");
 });
 
 test("buildLaunchSpec builds unfenced invocation", () => {
@@ -213,6 +214,22 @@ test("buildLaunchSpec builds unfenced invocation", () => {
 	assert.equal(spec.command, "pi");
 	assert.deepEqual(spec.args, ["--model", "x/y"]);
 	assert.equal(spec.env.PI_FENCED_LAUNCHER, "1");
+	assert.equal(spec.env.NODE_USE_ENV_PROXY, "1");
+});
+
+test("buildLaunchSpec preserves caller-provided NODE_USE_ENV_PROXY", () => {
+	const spec = buildLaunchSpec({
+		withoutFence: false,
+		fenceMonitor: false,
+		configPath: "/Users/test/.pi/agent/fence/presets/default-configuration.json",
+		piArgs: ["hello"],
+		baseEnv: {
+			PATH: "x",
+			NODE_USE_ENV_PROXY: "0",
+		},
+	});
+
+	assert.equal(spec.env.NODE_USE_ENV_PROXY, "0");
 });
 
 test("validateFenceConfig passes when validator succeeds", () => {
